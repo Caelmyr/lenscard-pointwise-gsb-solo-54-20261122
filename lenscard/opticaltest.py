@@ -1,7 +1,13 @@
-"""Direct measurements for a numbered lenticular angle isolation patch."""
+"""Direct measurements for a numbered lenticular angle isolation patch.
+
+One observation angle may be covered by several photographs taken from the same
+position, each with different specular reflections.  Every photograph keeps its
+own dark/white exposure reference.  Per numbered patch the readable candidates
+are compared across the photographs of that angle so the clearest source can be
+selected, glare can be explained, and genuinely ambiguous patches stay blank.
+"""
 from dataclasses import dataclass
 from hashlib import sha256
-from io import BytesIO
 import math
 
 import numpy as np
@@ -17,8 +23,14 @@ from .visual import chart_png, overlay_regions, png_bytes, resize_report
 BLACK_LUMA = .025
 WHITE_LUMA = .86
 MAX_TEST_PHOTOS = 7
+MAX_PHOTOS_PER_ANGLE = 3
 REFERENCE_GAP = .08
 MIN_SUPPORTED = 40
+# A robust within-patch spread above this is treated as a local reflection.
+GLARE_SPREAD = .30
+# Normalised median readings from two captures beyond this are considered
+# incompatible; the patch is then resolved from the glare evidence or left blank.
+DISAGREEMENT = .18
 
 
 @dataclass(frozen=True)
@@ -125,12 +137,30 @@ def render_angle_target(records, plan):
     }
 
 
-def _photo_sample(pixels, zone):
+def _excluded_indices(value, row_count, label):
+    """Parse the user-marked rows that must not be read from one photograph."""
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        raise Unprocessable(f"{label} must be a list of patch row indices.")
+    result = set()
+    for item in value:
+        index = integer(item, f"{label} entry", 0, row_count - 1)
+        result.add(index)
+    return frozenset(result)
+
+
+def _photo_sample(pixels, zone, enabled):
     height, width = pixels.shape
     left, top, right, bottom = zone.pixels(width, height)
     cropped = pixels.rgb[top:bottom, left:right]
-    support = pixels.support[top:bottom, left:right]
+    support = pixels.support[top:bottom, left:right].copy()
+    if not enabled:
+        support[:] = False
     success = int(np.count_nonzero(support))
+    if not enabled:
+        return {"luma": None, "p05": None, "p95": None,
+                "sampled": 0, "total": int(support.size), "source_box": [left, top, right, bottom]}
     if success < max(MIN_SUPPORTED, math.ceil(support.size * .65)):
         raise Unprocessable("One test patch has too few fully visible samples.")
     lum = linear_luminance(cropped)[support]
@@ -148,92 +178,373 @@ def _exposure_reference(dark, white):
     return difference
 
 
+def _glare_flags(spread):
+    return spread is not None and spread > GLARE_SPREAD
+
+
 def measure_photo(photo, filename, request, view_count):
+    """Measure one photograph with its own dark/white reference and masks."""
     obj = object_value(request, "test photo")
-    validate_keys(obj, {"angle", "frame", "expected", "name"}, "test photo")
+    validate_keys(obj, {"angle", "frame", "expected", "name", "exclude"}, "test photo")
     angle = number(obj.get("angle"), "observed angle", -85, 85)
     intended = integer(obj.get("expected"), "expected view", 1, view_count)
     name = short_text(obj.get("name", filename), "capture name", maximum=122)
     frame = PatchLayout.from_frame(obj.get("frame"), view_count)
+    excluded = _excluded_indices(obj.get("exclude"), frame.rows, "excluded patch rows")
+    if 0 in excluded:
+        raise Unprocessable("A photograph needs its dark reference patch; remove it from the excluded rows.")
+    if frame.rows - 1 in excluded:
+        raise Unprocessable("A photograph needs its white reference patch; remove it from the excluded rows.")
     decoded = read_capture(photo, filename)
     pixels = sample_capture(decoded, fit_size(decoded.image.size, 1300))
-    measured = [_photo_sample(pixels, patch["region"]) for patch in frame.entries()]
+    measured = [
+        _photo_sample(pixels, patch["region"], index not in excluded)
+        for index, patch in enumerate(frame.entries())
+    ]
     dark, white = measured[0], measured[-1]
     contrast = _exposure_reference(dark, white)
     patches = []
     for i, info in enumerate(measured[1:-1], start=1):
+        if i in excluded:
+            patches.append({
+                "index": i, "excluded": True, "ratio": None, "robust_range": None,
+                "luma": None, "valid_pixels": 0, "pixel_box": info["source_box"],
+            })
+            continue
         normalized = (info["luma"] - dark["luma"]) / contrast
         spread = (info["p95"] - info["p05"]) / contrast
         patches.append({
-            "index": i, "ratio": round(normalized, 6), "robust_range": round(spread, 6),
-            "luma": round(info["luma"], 7), "valid_pixels": info["sampled"], "pixel_box": info["source_box"],
+            "index": i, "excluded": False, "ratio": round(normalized, 6),
+            "robust_range": round(spread, 6), "luma": round(info["luma"], 7),
+            "valid_pixels": info["sampled"], "pixel_box": info["source_box"],
+            "glare": _glare_flags(spread),
         })
-    projected = [max(0.0, min(1.0, patch["ratio"])) for patch in patches]
-    total = sum(projected)
-    expected = projected[intended - 1]
-    others = [v for n, v in enumerate(projected, start=1) if n != intended]
-    strongest = int(np.argmax(projected)) + 1
-    comparison = {
-        "expected_displayed": strongest == intended,
-        "strongest_index": strongest,
-        "other_light_fraction": round((total - expected) / total, 6) if total else None,
-        "strongest_other_ratio": round(max(others), 6),
-        "sum_normalized": round(total, 6),
-        "selected_ratio": round(expected, 6),
-    }
     original = Image.fromarray(linear_to_srgb(pixels.rgb))
     region_colors = []
-    for patch in frame.entries():
-        index = patch["view_index"]
-        caption = patch["kind"] if index is None else f"V{index + 1}"
-        emphasis = index is not None and index + 1 == intended
-        region_colors.append((patch["region"].public(), caption,
-                              (251, 197, 91) if emphasis else (105, 210, 184)))
+    for index, patch in enumerate(frame.entries()):
+        view_index = patch["view_index"]
+        caption = patch["kind"] if view_index is None else f"V{view_index + 1}"
+        if index in excluded:
+            color = (232, 96, 104)
+            caption = f"x {caption}"
+        elif view_index is not None and patches[view_index].get("glare"):
+            color = (247, 191, 113)
+        elif view_index is not None and view_index + 1 == intended:
+            color = (251, 197, 91)
+        else:
+            color = (105, 210, 184)
+        region_colors.append((patch["region"].public(), caption, color))
     diagram = overlay_regions(original, region_colors)
-    report = {
-        "kind": "measured-angle-isolation", "angle": angle, "expected_view": intended,
+    draw = ImageDraw.Draw(diagram)
+    draw.rectangle((4, 4, 4 + max(150, int(diagram.width * .32)), 26), fill=(21, 35, 46))
+    draw.text((8, 8), f"{name}  /  {angle:g} deg", fill=(236, 241, 245))
+    record = {
+        "angle": angle, "expected_view": intended,
         "input": {"size": [decoded.width, decoded.height], "sha256": sha256(photo).hexdigest(),
-                  "label": name, "encoding": decoded.information},
+                  "label": name, "filename": filename, "encoding": decoded.information},
+        "excluded_rows": sorted(excluded),
         "illumination_reference": {"black": round(dark["luma"], 6), "white": round(white["luma"], 6),
                                    "contrast": round(contrast, 6)},
         "normalization": "linear luminance relative to dark and white patches from this photograph",
-        "patches": patches, "result": comparison,
+        "patches": patches,
     }
-    return report, png_bytes(resize_report(diagram, 950))
+    return record, png_bytes(resize_report(diagram, 950))
+
+
+def _candidate(patch, photo):
+    return {
+        "photo_id": photo["photo_id"], "label": photo["input"]["label"],
+        "ratio": patch["ratio"], "robust_range": patch["robust_range"],
+        "valid_pixels": patch["valid_pixels"], "glare": bool(patch.get("glare")),
+    }
+
+
+def _select_patch(index, candidates):
+    """Choose a source for one numbered patch or leave it blank with a reason."""
+    readable = [candidate for candidate in candidates if candidate["ratio"] is not None]
+    if not readable:
+        return {
+            "index": index, "ratio": None, "source_photo": None, "status": "blank",
+            "glare": False, "candidate_count": 0, "candidates": candidates,
+            "note": "Every photograph of this angle marked this patch unreadable; no value is reported.",
+        }
+    if len(readable) == 1:
+        only = readable[0]
+        note = (f"Only {only['label']} reads this patch clearly; the value is taken from that photograph."
+                if len(candidates) == 1 else
+                f"The other photographs exclude this patch; the only readable value comes from {only['label']}.")
+        if only["glare"]:
+            note += " A wide within-patch spread still suggests a local reflection; verify before approving."
+        return {
+            "index": index, "ratio": only["ratio"], "source_photo": only["photo_id"],
+            "source_label": only["label"], "status": "single-source",
+            "glare": only["glare"], "candidate_count": len(readable),
+            "candidates": candidates, "note": note,
+        }
+    ratios = np.asarray([candidate["ratio"] for candidate in readable], dtype=float)
+    disagreement = float(ratios.max() - ratios.min())
+    clean = [candidate for candidate in readable if not candidate["glare"]]
+    glare_labels = [candidate["label"] for candidate in readable if candidate["glare"]]
+    if not glare_labels and disagreement <= DISAGREEMENT:
+        chosen = min(readable, key=lambda candidate: (candidate["robust_range"], -candidate["valid_pixels"]))
+        note = (f"{len(readable)} photographs agree within {DISAGREEMENT:g}; "
+                f"{chosen['label']} has the tightest within-patch spread and is used.")
+        return {
+            "index": index, "ratio": chosen["ratio"], "source_photo": chosen["photo_id"],
+            "source_label": chosen["label"], "status": "agreed",
+            "glare": False, "candidate_count": len(readable), "candidates": candidates,
+            "disagreement": round(disagreement, 6), "note": note,
+        }
+    if glare_labels:
+        if len(clean) == 1:
+            chosen = clean[0]
+            note = (f"{', '.join(glare_labels)} shows a local reflection (wide within-patch spread) "
+                    f"and is set aside; {chosen['label']} is used. Median readings differ by "
+                    f"{disagreement:.3f}.")
+            return {
+                "index": index, "ratio": chosen["ratio"], "source_photo": chosen["photo_id"],
+                "source_label": chosen["label"], "status": "glare-rejected-other",
+                "glare": False, "candidate_count": len(readable), "candidates": candidates,
+                "disagreement": round(disagreement, 6), "note": note,
+            }
+        note = ("Every readable photograph shows a reflective patch (wide within-patch spread); "
+                "no glare-free source exists, so this patch is left blank rather than guessed.")
+        return {
+            "index": index, "ratio": None, "source_photo": None, "status": "ambiguous",
+            "glare": True, "candidate_count": len(readable), "candidates": candidates,
+            "disagreement": round(disagreement, 6), "note": note,
+        }
+    note = (f"Readings differ by {disagreement:.3f} without a clear reflection signature in any "
+            "photograph; the cause cannot be decided here, so this patch is left blank.")
+    return {
+        "index": index, "ratio": None, "source_photo": None, "status": "ambiguous",
+        "glare": False, "candidate_count": len(readable),
+        "candidates": candidates, "disagreement": round(disagreement, 6), "note": note,
+    }
+
+
+def _angle_summary(group, view_count):
+    selections = group["patches"]
+    decided = [patch for patch in selections if patch["ratio"] is not None]
+    blank = [patch["index"] for patch in selections if patch["ratio"] is None]
+    projected = {patch["index"]: max(0.0, min(1.0, patch["ratio"])) for patch in decided}
+    intended = group["expected_view"]
+    strongest = max(projected, key=projected.get) if projected else None
+    expected = projected.get(intended)
+    others = [value for index, value in projected.items() if index != intended]
+    complete = len(decided) == view_count
+    expected_displayed = complete and strongest == intended
+    rejected_photos = [photo["photo_id"] for photo in group["photos"] if photo["status"] != "measured"]
+    result = {
+        "complete": complete,
+        "blank_patches": blank,
+        "expected_displayed": expected_displayed,
+        "strongest_index": strongest,
+        "selected_ratio": round(expected, 6) if expected is not None else None,
+        "strongest_other_ratio": round(max(others), 6) if others else None,
+        "sum_normalized": round(sum(projected.values()), 6) if projected else None,
+        "rejected_photos": rejected_photos,
+        "passed": complete and expected_displayed and not rejected_photos,
+        "pass_note": (
+            "All patches resolved and the intended band is dominant."
+            if complete and expected_displayed and not rejected_photos
+            else "This angle is not fully passed: " + "; ".join(
+                ([f"patch {', '.join(map(str, blank))} could not be read"] if blank else [])
+                + ([f"{len(rejected_photos)} photograph(s) failed their own reference checks"]
+                   if rejected_photos else [])
+                + ([] if expected_displayed or not complete else
+                   ["the intended band is not the strongest readable band"])
+            )
+        ),
+    }
+    group["result"] = result
+    return result
+
+
+def _legacy_groups(settings):
+    groups = []
+    for item in settings:
+        if not isinstance(item, dict):
+            raise Unprocessable("Each angle entry must be an object.")
+        groups.append({
+            "angle": item["angle"], "expected": item["expected"], "frame": item["frame"],
+            "name": item.get("name"),
+            "photos": [{"name": item.get("name"), "frame": item["frame"],
+                        "exclude": item.get("exclude", [])}],
+        })
+    return groups
+
+
+def _parse_groups(settings, view_count):
+    if not isinstance(settings, list) or not settings:
+        raise Unprocessable("Supply at least one angle group of photographs.")
+    groups = []
+    if all(isinstance(item, dict) and "photos" in item for item in settings):
+        for group in settings:
+            validate_keys(group, {"angle", "expected", "frame", "name", "photos"}, "angle group")
+            photos = group.get("photos")
+            if not isinstance(photos, list) or not 1 <= len(photos) <= MAX_PHOTOS_PER_ANGLE:
+                raise Unprocessable(f"Each angle needs one to {MAX_PHOTOS_PER_ANGLE} photographs.")
+            parsed_photos = []
+            for photo in photos:
+                if not isinstance(photo, dict):
+                    raise Unprocessable("Each angle photograph must be an object with name, frame and exclude.")
+                validate_keys(photo, {"name", "frame", "exclude"}, "angle photograph")
+                frame = photo.get("frame") if "frame" in photo else group.get("frame")
+                if frame is None:
+                    raise Unprocessable("Every photograph needs a target frame, either on the photo or the angle group.")
+                parsed_photos.append({
+                    "name": photo.get("name") or group.get("name"),
+                    "frame": frame,
+                    "exclude": _excluded_indices(photo.get("exclude", []),
+                                                 PatchLayout.from_frame(frame, view_count).rows,
+                                                 "excluded patch rows"),
+                })
+            groups.append({
+                "angle": number(group.get("angle"), "observed angle", -85, 85),
+                "expected": integer(group.get("expected"), "expected view", 1, view_count),
+                "frame": group.get("frame"),
+                "name": group.get("name"),
+                "photos": parsed_photos,
+            })
+    else:
+        groups = _legacy_groups(settings)
+    angles = [group["angle"] for group in groups]
+    if len(set(angles)) != len(angles):
+        raise Unprocessable("Give each angle group a unique observation angle; repeat photographs belong in one group.")
+    return groups
 
 
 def measured_angle_set(files, settings, view_count):
-    if len(files) != len(settings) or not 1 <= len(files) <= MAX_TEST_PHOTOS:
-        raise Unprocessable(f"Supply matched descriptions for one to {MAX_TEST_PHOTOS} angle photographs.")
-    rows = []
+    groups = _parse_groups(settings, view_count)
+    total_photos = sum(len(group["photos"]) for group in groups)
+    if len(files) != total_photos or not 1 <= total_photos <= MAX_TEST_PHOTOS:
+        raise Unprocessable(
+            f"Supply one image file per photograph ({total_photos} listed) and at most {MAX_TEST_PHOTOS} in total."
+        )
     diagrams = {}
-    for i, ((filename, content), request) in enumerate(zip(files, settings, strict=True), start=1):
-        record, image = measure_photo(content, filename, request, view_count)
-        key = f"photo-{i}"
-        record["inspection_plate"] = key
-        rows.append(record)
-        diagrams[key] = image
-    rows.sort(key=lambda entry: entry["angle"])
-    values = np.asarray([row["angle"] for row in rows])
-    if len(set(values)) != len(values):
-        raise Unprocessable("Give each photograph a unique observation angle.")
-    y = np.asarray([row["result"]["strongest_other_ratio"] for row in rows])
-    active = np.asarray([row["result"]["selected_ratio"] for row in rows])
+    angle_groups = []
+    file_cursor = 0
+    for group_index, group in enumerate(groups, start=1):
+        photo_records = []
+        for photo_index, photo in enumerate(group["photos"], start=1):
+            photo_id = f"a{group_index}-photo-{photo_index}"
+            filename, content = files[file_cursor]
+            file_cursor += 1
+            request = {
+                "angle": group["angle"], "expected": group["expected"],
+                "frame": photo["frame"], "exclude": sorted(photo["exclude"]),
+                "name": photo["name"] or f"Angle {group['angle']:g} — photo {photo_index}",
+            }
+            try:
+                record, image = measure_photo(content, filename, request, view_count)
+                record["photo_id"] = photo_id
+                record["status"] = "measured"
+                diagrams[photo_id] = image
+                photo_records.append(record)
+            except Unprocessable as error:
+                photo_records.append({
+                    "photo_id": photo_id, "status": "rejected", "angle": group["angle"],
+                    "expected_view": group["expected"],
+                    "input": {"label": request["name"], "filename": filename,
+                              "sha256": sha256(content).hexdigest()},
+                    "excluded_rows": sorted(photo["exclude"]),
+                    "patches": [], "rejection": str(error),
+                })
+        merged = _merge_group(group, photo_records, view_count)
+        angle_groups.append(merged)
+
+    angle_groups.sort(key=lambda entry: entry["angle"])
+    values = np.asarray([entry["angle"] for entry in angle_groups], dtype=float)
+    selected = np.asarray([entry["result"]["selected_ratio"]
+                           if entry["result"]["selected_ratio"] is not None else float("nan")
+                           for entry in angle_groups], dtype=float)
+    competing = np.asarray([entry["result"]["strongest_other_ratio"]
+                            if entry["result"]["strongest_other_ratio"] is not None else float("nan")
+                            for entry in angle_groups], dtype=float)
     diagrams["contrast"] = chart_png([
-        ("Expected band", values, active), ("Strongest competing band", values, y),
+        ("Expected band (selected source)", values, selected),
+        ("Strongest competing band", values, competing),
     ], x_label="Observed angle (degrees)", y_label="Normalised patch ratio", y_bounds=[0, 1])
-    return {
+    failed_angles = [
+        {"angle": entry["angle"], "reason": entry["result"]["pass_note"]}
+        for entry in angle_groups if not entry["result"]["passed"]
+    ]
+    report = {
         "kind": "measured-angle-series",
-        "sources": rows, "count": len(rows), "view_count": view_count,
-        "bad_views": [row["angle"] for row in rows if not row["result"]["expected_displayed"]],
+        "angle_groups": angle_groups,
+        "sources": angle_groups,
+        "count": len(angle_groups),
+        "photo_count": total_photos,
+        "view_count": view_count,
+        "bad_views": [entry["angle"] for entry in angle_groups if not entry["result"]["expected_displayed"]],
+        "incomplete_angles": [entry["angle"] for entry in angle_groups if not entry["result"]["complete"]],
+        "failed_angles": failed_angles,
         "spread_degrees": [float(values.min()), float(values.max())],
-        "note": "Only measured photographs are reported. Orientation, exposure and target coverage affect the results.",
-    }, diagrams
+        "selection_policy": (
+            "Each photograph is normalised against its own dark and white patches. Per numbered patch the "
+            "readable photographs of one angle are compared: photographs without a reflection signature that "
+            "agree use the tightest-spread source; a wide within-patch spread identifies a local reflection so "
+            "that capture can be set aside when another clean capture exists; if every capture reflects, or the "
+            "readings disagree without an explainable cause, the patch stays blank and the angle is not passed."
+        ),
+        "note": "Only measured photographs are reported. Orientation, exposure, masks and target coverage affect the results.",
+    }
+    return report, diagrams
+
+
+def _merge_group(group, photo_records, view_count):
+    measured = [record for record in photo_records if record["status"] == "measured"]
+    if not measured:
+        rejections = [record.get("rejection", "the capture could not be measured")
+                      for record in photo_records if record["status"] != "measured"]
+        merged = {
+            "angle": group["angle"],
+            "expected_view": group["expected"],
+            "photo_count": len(photo_records),
+            "photos": photo_records,
+            "patches": [],
+            "group_warning": "No photograph of this angle passed its own reference checks: "
+                             + " | ".join(rejections),
+        }
+        merged["result"] = {
+            "complete": False, "blank_patches": list(range(1, view_count + 1)),
+            "expected_displayed": False, "strongest_index": None,
+            "selected_ratio": None, "strongest_other_ratio": None, "sum_normalized": None,
+            "rejected_photos": [record["photo_id"] for record in photo_records],
+            "passed": False,
+            "pass_note": "This angle is not fully passed: every photograph failed its own reference checks.",
+        }
+        return merged
+    patches = []
+    for index in range(1, view_count + 1):
+        candidates = []
+        for record in measured:
+            patch = next((item for item in record["patches"] if item["index"] == index), None)
+            if patch is None or patch.get("excluded"):
+                continue
+            candidates.append(_candidate(patch, record))
+        patches.append(_select_patch(index, candidates))
+    merged = {
+        "angle": group["angle"],
+        "expected_view": group["expected"],
+        "photo_count": len(photo_records),
+        "photos": photo_records,
+        "patches": patches,
+    }
+    _angle_summary(merged, view_count)
+    return merged
 
 
 def simulated_photograph(
     records, plan, intended_view, principal=.84, neighbour=.11, angle_yield=.006,
+    glare_rows=(), glare_strength=.5,
 ):
+    """Build a synthetic capture; ``glare_rows`` injects local bright reflections.
+
+    Row indices follow the target layout: 0 is the dark reference, the last row
+    is the white reference and the rows between are the numbered view patches.
+    """
     _, ordered = target_definition(records, plan)
     count = len(ordered)
     width, height = 530, 690
@@ -253,8 +564,17 @@ def simulated_photograph(
         else:
             relative = .06 + .73 * .025
         fixture[top:bottom, left:right] = relative
+        if index in glare_rows:
+            band_height = max(6, (bottom - top) // 3)
+            band_top = top + (bottom - top) // 4
+            fixture[band_top:band_top + band_height, left + 6:right - 6] = (
+                np.clip(fixture[band_top:band_top + band_height, left + 6:right - 6]
+                        + glare_strength, 0, 1)
+            )
     fixture += random.normal(0, angle_yield, fixture.shape).astype(np.float32)
-    encoded = Image.fromarray(linear_to_srgb(fixture)).convert("RGB")
+    encoded = Image.fromarray(linear_to_srgb(np.clip(fixture, 0, 1))).convert("RGB")
     draw = ImageDraw.Draw(encoded)
     draw.text((22, 20), "SYNTHETIC TEST PHOTO / not measured material", fill=(239, 227, 179))
+    if glare_rows:
+        draw.text((22, 40), "INJECTED LOCAL REFLECTION", fill=(247, 191, 113))
     return png_bytes(encoded), [layout.left, layout.top, layout.right, layout.bottom]

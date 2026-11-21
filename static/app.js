@@ -2,7 +2,7 @@ import {
     ask, button, byId, check, closeDialog, dialogForm, esc, field, format, group, img, link,
     metrics, modal, notice, numbers, optionRows, readout, select, submit, textarea, titleWords, values,
 } from './ui.js';
-import {physicalActions, physicalForms} from './metrology.js';
+import {physicalActions, physicalForms, renderMeasuredSeries} from './metrology.js';
 
 const state = {
     library: [], samples: [], tools: {}, card: null, proofs: [], measurements: [], events: [],
@@ -139,6 +139,8 @@ function renderReading() {
     const report = data.report;
     const pictures = Object.entries(data.images || {});
     const title = label(report.kind || state.lastTool?.tool || 'inspection');
+    const series = renderMeasuredSeries(report, data.images || {});
+    if (series) return series;
     return `<section class="results"><h2>${esc(title)}</h2>
        ${pictures.length ? img(pictures[0][1], titleWords(pictures[0][0])) : ''}
        <div class="row">${pictures.map(([name])=>button(titleWords(name),'result-view',name)).join('')}
@@ -247,9 +249,15 @@ const actions = {
     'keep-reading': () => dialogForm('Retain inspection','keep-reading',field('Inspection title','title',label(state.lastTool.tool)),'Keep inspection'),
     'open-reading': async id => {
         const {measurement:m}=await ask(`${api()}/measurements/${id}`);
-        const pictures=Object.keys(m.assets).filter(key => m.assets[key].mime==='image/png').map(key =>
-            img(`${api()}/measurements/${id}/asset/${key}`,titleWords(key))).join('');
+        const imageMap={};
+        const pictures=Object.keys(m.assets).filter(key => m.assets[key].mime==='image/png').map(key => {
+            const url=`${api()}/measurements/${id}/asset/${key}`;
+            imageMap[key]=url;
+            return img(url,titleWords(key));
+        }).join('');
         const csv=m.assets.csv?link('Download measurement CSV',`${api()}/measurements/${id}/asset/csv?download=1`):'';
+        const series = renderMeasuredSeries(m.report, imageMap);
+        if (series) { modal(m.title, series + `<div class="row">${csv}</div>`); return; }
         modal(m.title,pictures+csv+readout(m.report));
     },
     'result-view': key => {state.stageMods.inspect=state.reading.images[key];state.stage='inspect';redraw();},

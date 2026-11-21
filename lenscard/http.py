@@ -300,7 +300,7 @@ def register_targets(app, library, work):
     @app.get("/api/cards/<card_id>/synthetic-reading")
     def synthetic_specs(card_id):
         data = sample_measurements(library, card_id)
-        return {key: data[key] for key in ("count", "ticks", "settings")}
+        return {key: data[key] for key in ("count", "angle_count", "ticks", "settings")}
 
     @app.post("/api/cards/<card_id>/measured-optics")
     def measured_optics(card_id):

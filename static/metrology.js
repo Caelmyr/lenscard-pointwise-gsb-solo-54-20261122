@@ -15,13 +15,24 @@ function uploadSettings(node, values) {
     body.set('settings',JSON.stringify(values));
     return body;
 }
+const PHOTO_HELP = `
+<p class="muted">One group per observation angle. Each group lists every photograph taken from that
+angle; each photograph keeps its own dark and white reference. Use <b>exclude</b> as layout row indices
+(0 = dark reference, last row = white reference, middle rows = numbered patches 1…N) to mark patches
+spoiled by a reflection — reference rows cannot be excluded. Photos must be selected in the flattened
+order: group 1 photo 1, group 1 photo 2, group 2 photo 1, …</p>`;
 function measuredForm(ctx, support) {
     const active = ctx.state.card.views.filter(item=>item.enabled);
-    const rows = Array.from({length:Math.min(active.length,7)},(_,i)=>support?.settings?.[i] ||
-        {angle:active[i].position,expected:i+1,frame:[.13,.17,.87,.85],name:active[i].title});
+    const groups = support?.settings || active.map((view,i)=>({
+        angle: view.position, expected: i+1, frame:[.13,.17,.87,.85],
+        name: view.title,
+        photos: [{name:`${view.title} — photo 1`, frame:[.13,.17,.87,.85], exclude:[]},
+                 {name:`${view.title} — photo 2`, frame:[.13,.17,.87,.85], exclude:[]}],
+    }));
     dialogForm('Read angle photographs','measure-optics',
-        `${field('Angle photographs (in settings order)','capture','','file','accept="image/*,.tif,.tiff" multiple required')}
-        ${textarea('Angle, patch and frame coordinates as JSON','settings',JSON.stringify(rows,null,2),7800)}
+        `${field('Angle photographs (flattened group order)','capture','','file','accept="image/*,.tif,.tiff" multiple required')}
+        ${textarea('Angle groups and per-photograph glare masks as JSON','settings',JSON.stringify(groups,null,2),14000)}
+        ${PHOTO_HELP}
         ${select('Tie to retained proof','proof',[['','Current draft'],...proofChoices(ctx)],'')}
         ${field('Retain as (optional)','title')}`,'Read test photos');
 }
@@ -29,8 +40,76 @@ function compareModal(ctx) {
     const options=proofChoices(ctx);
     if(options.length<2) throw Error('Retain two proofs before comparing them.');
     dialogForm('Compare frozen print rasters','compare-frozen',
-        select('Proof A','first',options,options.at(0)[0])+select('Proof B','other',options,options.at(1)[0])+
+        select('Proof A','first',options,options.at(0)[0])+select('Proof B','other',options,options.at(0)[0])+
         box([['Split position','split',.5],['Difference cutoff','cutoff',.04]]),'Compare recorded rasters');
+}
+const STATUS_LABEL = {
+    agreed: 'Photos agree',
+    'single-source': 'Single clear source',
+    'glare-rejected-other': 'Glare capture set aside',
+    ambiguous: 'Left blank — unresolved',
+    blank: 'Left blank — unreadable',
+};
+function patchRows(group) {
+    return group.patches.map(patch => {
+        const status = STATUS_LABEL[patch.status] || patch.status;
+        const ratio = patch.ratio === null || patch.ratio === undefined ? '—' : format(patch.ratio, 4);
+        const source = patch.source_label
+            ? esc(patch.source_label)
+            : (patch.status === 'ambiguous' || patch.status === 'blank' ? 'none' : '—');
+        const cls = patch.ratio === null || patch.ratio === undefined ? 'warn' : patch.glare ? 'muted' : '';
+        return `<tr class="${cls}"><td>${patch.index}</td><td>${ratio}</td><td>${esc(status)}</td>
+                <td>${source}</td><td>${patch.disagreement ?? '—'}</td></tr>`;
+    }).join('');
+}
+function angleCard(group, imageMap) {
+    const result = group.result;
+    const head = result.passed
+        ? `<h3>${format(group.angle)}° — passed</h3>`
+        : `<h3 class="warn">${format(group.angle)}° — not fully passed</h3>`;
+    const photoThumbs = group.photos.map(photo => {
+        const badge = photo.status === 'measured'
+            ? ''
+            : `<div class="badge warn">rejected: ${esc(photo.rejection || 'reference check failed')}</div>`;
+        const masks = photo.excluded_rows?.length
+            ? `<div class="muted small">masked rows: ${photo.excluded_rows.join(', ')}</div>` : '';
+        const refs = photo.illumination_reference
+            ? `<div class="muted small">own refs · black ${format(photo.illumination_reference.black,4)} / white ${format(photo.illumination_reference.white,4)}</div>`
+            : '';
+        const image = imageMap[photo.photo_id] ? img(imageMap[photo.photo_id], esc(photo.input.label)) : '';
+        return `<figure class="plate"><figcaption><b>${esc(photo.input.label)}</b></figcaption>
+                ${image}${badge}${masks}${refs}</figure>`;
+    }).join('');
+    return `<article class="angle-result">${head}
+      ${group.group_warning ? `<p class="warn">${esc(group.group_warning)}</p>` : ''}
+      <p class="muted">${esc(result.pass_note)}</p>
+      <table class="patch-table"><thead><tr><th>Patch</th><th>Ratio</th><th>Decision</th>
+      <th>Source photograph</th><th>Spread</th></tr></thead><tbody>${patchRows(group)}</tbody></table>
+      <div class="plate-row">${photoThumbs}</div>
+      <details><summary>Per-patch comparison notes</summary>
+        <ul class="notes">${group.patches.map(patch=>`<li><b>Patch ${patch.index}:</b> ${esc(patch.note)}</li>`).join('')}</ul>
+      </details></article>`;
+}
+export function renderMeasuredSeries(report, images) {
+    if (report.kind !== 'measured-angle-series') return '';
+    const passed = report.failed_angles.length === 0;
+    const metric = [
+        ['Angle groups', report.count],
+        ['Photographs measured', report.photo_count],
+        ['Angles fully passed', `${report.count - report.failed_angles.length}/${report.count}`],
+        ['Blank patches', report.angle_groups.reduce((n,g)=>n+g.result.blank_patches.length,0)],
+    ];
+    const summary = passed
+        ? '<p class="ok">Every angle resolved all patches and shows the intended band as dominant.</p>'
+        : `<p class="warn">${report.failed_angles.length} angle(s) are not fully passed and are kept open:
+           ${report.failed_angles.map(item=>`${format(item.angle)}°`).join(', ')}</p>`;
+    return `<section class="results measured-series"><h2>Measured angle isolation</h2>
+      ${metrics(metric)}${summary}
+      ${img(images.contrast,'Expected and competing band ratios across angles')}
+      ${report.angle_groups.map(group=>angleCard(group, images)).join('')}
+      <details><summary>Selection policy and raw report</summary>
+        <p class="muted">${esc(report.selection_policy)}</p>${readout(report)}</details>
+      </section>`;
 }
 export function physicalActions(ctx) {
     return {
@@ -40,7 +119,7 @@ export function physicalActions(ctx) {
             box([['Number of rows','increments',7,1],['Pitch change per row (LPI)','delta_lpi',.2]]),'Build pitch target'),
         'angle-target': async () => deliver(ctx,await ask(`${ctx.api()}/angle-target`)),
         'lens-fit-dialog': async () => {
-            const demo = ctx.state.card.synthetic ? await ask(`${ctx.api()}/synthetic-reading`) : null;
+            const demo = await ask(`${ctx.api()}/synthetic-reading`);
             dialogForm('Fit marked lens lines','fit-lens',
                 textarea('X (mm), Y (mm) and integer stripe index as JSON','ticks',JSON.stringify(demo?.ticks || [],null,2),7800),
                 'Fit global lens');
@@ -53,9 +132,11 @@ export function physicalActions(ctx) {
         'measure-optics': async () => {
             const demo = ctx.state.card.synthetic ? await ask(`${ctx.api()}/synthetic-reading`) : null;
             if(demo) {
-                modal('Synthetic example photographs',`<div class="row">${demo.settings.map((row,i)=>
-                link(row.name,`${ctx.api()}/synthetic-reading/${i+1}`)).join('')}</div>
-                <p class="muted">Use these files to exercise the patch measurement without a camera.</p>
+                modal('Synthetic example photographs',`<div class="row">${demo.settings.flatMap((group,g)=>
+                    group.photos.map((photo,p)=>
+                        link(photo.name,`${ctx.api()}/synthetic-reading/${g*group.photos.length+p+1}`))).join('')}</div>
+                <p class="muted">Two photographs per angle with injected local reflections and one masked patch.
+                   Use them to exercise multi-photo patch selection without a camera.</p>
                 ${button('Enter photograph readings','measured-form','','orange')}`);
                 ctx.state.measureHints=demo;
             } else measuredForm(ctx,null);
@@ -67,9 +148,9 @@ export function physicalActions(ctx) {
                 ['Requested height (mm)','height',ctx.state.card.config.sheet.height_mm],['Pixels per millimetre','resolution',9]]),'Rectify photograph'),
         schedule: () => dialogForm('Plan camera angle stops','schedule',
             box([['Observation points','steps',11,1],['Half sweep (°)','angle_limit',ctx.state.card.config.lens.latitude*.88],
-                ['Hold (s)','dwell',.55],['Turn (°/s)','travel',13],['Target main-band fraction','dominance',.68]])+
+            ['Hold (s)','dwell',.55],['Turn (°/s)','travel',13],['Target main-band fraction','dominance',.68]])+
             select('Direction','side',[['left_to_right','Left to right'],['right_to_left','Right to left']],'left_to_right'),'Build capture plan'),
-        'source-preflight': async () => deliver(ctx,await ask(`${ctx.api()}/preflight`)),
+        'source-preflight': async () => deliver(ctx,await ask(`${ctx.api()}/preflight}`)),
         'review-sweep': () => dialogForm('Review actual camera timing','review-sweep',
             textarea('Prior capture settings (JSON)','settings',JSON.stringify(ctx.state.scheduleSettings || {},null,2),6000)+
             field('Camera timestamps in order (seconds)','timings'),'Compare to planned stops'),

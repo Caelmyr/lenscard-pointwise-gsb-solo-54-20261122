@@ -251,11 +251,47 @@ def sample_measurements(library, card_id):
     plan = Plan.parse(card["config"])
     active = [view for view in originals if view["enabled"]]
     count = len(active)
+    # The upload budget is seven photographs; keep two reflective captures per
+    # angle while that fits, otherwise one deliberately masked capture per angle.
+    multi_photo = 2 * count <= 7
     settings = []
     files = []
     for n, record in enumerate(active, start=1):
-        image, frame = simulated_photograph(active, plan, n)
-        files.append((f"synthetic-photograph-{n}.png", image))
-        settings.append({"angle": record["position"], "expected": n, "frame": frame, "name": f"Synthetic at {record['position']:+g}°"})
+        image_a, frame = simulated_photograph(
+            active, plan, n, glare_rows=tuple(range(n + 1, count + 1)), glare_strength=.55,
+        )
+        label_a = f"Synthetic {record['position']:+g}° photo A (lower glare)"
+        if not multi_photo:
+            files.append((f"synthetic-photograph-{n}.png", image_a))
+            settings.append({
+                "angle": record["position"], "expected": n, "frame": frame,
+                "name": f"Synthetic at {record['position']:+g}°",
+                "photos": [{"name": label_a, "frame": frame, "exclude": [count] if count > 2 else []}],
+            })
+            continue
+        image_b, _ = simulated_photograph(
+            active, plan, n, glare_rows=tuple(range(1, n)), glare_strength=.55,
+        )
+        # The first angle also reflects on its own numbered band in every
+        # photograph, so that patch stays deliberately unresolved (blank).
+        if n == 1:
+            image_a, frame = simulated_photograph(
+                active, plan, n, glare_rows=(1, *range(n + 1, count + 1)), glare_strength=.55,
+            )
+            image_b, _ = simulated_photograph(
+                active, plan, n, glare_rows=(1, *range(1, n)), glare_strength=.55,
+            )
+        label_b = f"Synthetic {record['position']:+g}° photo B (upper glare)"
+        files.append((f"synthetic-photograph-{n}-a.png", image_a))
+        files.append((f"synthetic-photograph-{n}-b.png", image_b))
+        settings.append({
+            "angle": record["position"], "expected": n, "frame": frame,
+            "name": f"Synthetic at {record['position']:+g}°",
+            "photos": [
+                {"name": label_a, "frame": frame, "exclude": [count] if count > 2 else []},
+                {"name": label_b, "frame": frame, "exclude": []},
+            ],
+        })
     marks = teaching_ticks(plan.sheet, plan.lens)
-    return {"files": files, "settings": settings, "count": count, "ticks": marks}
+    return {"files": files, "settings": settings, "count": len(files),
+            "angle_count": len(active), "multi_photo": multi_photo, "ticks": marks}

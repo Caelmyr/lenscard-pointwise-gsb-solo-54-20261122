@@ -211,10 +211,33 @@ class CardJob:
             raise Unprocessable("The selected card or proof must contain at least two active views.")
         report, diagram = measured_angle_set(files, settings, view_count)
         report = {**report, **self.read_job(), "retained_proof": proof_id}
-        csv_data = [
-            {"capture": row["input"]["label"], "angle": row["angle"], "expected_view": row["expected_view"], **row["result"]}
-            for row in report["sources"]
-        ]
+        csv_data = []
+        for group in report["angle_groups"]:
+            for patch in group["patches"]:
+                csv_data.append({
+                    "angle": group["angle"],
+                    "expected_view": group["expected_view"],
+                    "patch": patch["index"],
+                    "status": patch["status"],
+                    "ratio": patch["ratio"],
+                    "source_photo": patch.get("source_label") or "",
+                    "glare_suspected": patch["glare"],
+                    "disagreement": patch.get("disagreement"),
+                    "note": patch["note"],
+                })
+            for photo in group["photos"]:
+                if photo["status"] != "measured":
+                    csv_data.append({
+                        "angle": group["angle"],
+                        "expected_view": group["expected_view"],
+                        "patch": "",
+                        "status": "rejected-photo",
+                        "ratio": "",
+                        "source_photo": photo["input"]["label"],
+                        "glare_suspected": "",
+                        "disagreement": "",
+                        "note": photo.get("rejection", ""),
+                    })
         return Result(report, diagram, csv_data)
 
     def retain_measurement(self, tool, title, values):
