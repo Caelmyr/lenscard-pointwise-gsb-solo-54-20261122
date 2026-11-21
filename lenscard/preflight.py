@@ -10,7 +10,7 @@ from scipy import ndimage
 from .framing import paper_rgb, prepare_registered, working_preview_sizes
 from .imaging import fit_size, linear_luminance, read_pixels
 from .models import Plan, Unprocessable, ordered_views
-from .optics import LensGrid, angular_domains, print_quanta
+from .optics import angular_domains, build_grid, print_quanta
 from .visual import code_statistics, png_bytes
 
 
@@ -169,7 +169,7 @@ def draft_preflight(library, card, records):
         usable = ordered_views(records)
         plan.check_sampling(len(usable))
         fitted = prepare_registered(library, records, plan.framing)
-        grid = LensGrid(plan.lens, plan.sheet.dpi, *plan.sheet.size)
+        grid = build_grid(plan)
         predicted = {"physical": grid.public(), "aligned_coverage": fitted.public(),
                      "nominal_angles": angular_domains(grid, usable),
                      "dot_budget": print_quanta(grid, len(usable), plan.sampling, plan.sheet.mount)}

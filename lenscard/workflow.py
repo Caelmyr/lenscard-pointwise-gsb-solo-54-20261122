@@ -5,6 +5,7 @@ from hashlib import sha256
 import math
 
 import numpy as np
+from PIL import Image, ImageDraw
 
 from .calibration import TestGrid, best_global_lens, calibration_fingerprint, fit_chart, target_assets
 from .diagnostics import compare_views, exposure_report, load_sample, pattern_report, profile_line, sharpness_report, spot_values
@@ -13,9 +14,9 @@ from .models import (
     Conflict, Missing, Plan, Unprocessable, number, object_value, require_sha, validate_keys,
 )
 from .opticaltest import measured_angle_set, render_angle_target
-from .optics import LensGrid
 from .printing import (
-    export_media, identify_candidate, inspect_angle, physical_dimensions, proof_inspection, render_print,
+    export_media, identify_candidate, inspect_angle, physical_dimensions, proof_inspection,
+    render_print,
 )
 from .tone import SoftOptions, analyze_neutral_noise, response_patches, soft_proof
 from .transfer import json_bytes, report_csv
@@ -24,6 +25,31 @@ from .visual import png_bytes
 
 def data_image(raw):
     return "data:image/png;base64," + b64encode(raw).decode("ascii")
+
+
+def seam_overview(output, plan):
+    """A same-size copy of the printed raster with the seam and blank strip called out."""
+    picture = Image.fromarray(output.image).convert("RGB")
+    grid = output.grid
+    if grid.split_mm is None:
+        return png_bytes(picture)
+    draw = ImageDraw.Draw(picture)
+    height = picture.height
+    side = plan.sheet.mount
+    gap = grid.gap_columns(side)
+    if gap.any():
+        columns = np.flatnonzero(gap)
+        draw.rectangle((int(columns.min()), 0, int(columns.max()) + 1, height), outline=(130, 136, 144))
+
+    def scan_column(face_mm):
+        return int(np.clip(grid.face_x_mm(face_mm, side), 0, grid.width - 1))
+
+    draw.line((scan_column(grid.split_mm), 0, scan_column(grid.split_mm), height), fill=(247, 204, 99), width=2)
+    if plan.two_piece.overlap_mm > 0:
+        # The concealed cut edge of the lower piece sits at the nominal seam.
+        draw.line((scan_column(plan.two_piece.seam_mm), 0, scan_column(plan.two_piece.seam_mm), height),
+                  fill=(154, 201, 190), width=1)
+    return png_bytes(picture)
 
 
 @dataclass
@@ -89,6 +115,7 @@ class CardJob:
             note["preview_angle"] = detail
             images["angles"] = png_bytes(shown)
         images["print-preview"] = output.preview()
+        images["seam-overview"] = seam_overview(output, self.plan)
         return Result({
             **note, **self.read_job(), "kind": "print-preview",
             "preflight": {"file_dimensions": output.metadata["raster_pixel_count"],
@@ -111,6 +138,7 @@ class CardJob:
                 "view_order": self.plan.lens.order,
                 "orientation": self.plan.sheet.mount,
                 "framing": self.plan.framing.public(),
+                "two_piece": self.plan.two_piece.public(),
                 "source_count": len(prepared.views),
                 "report_owner": "This record is rendered from the listed draft and originals.",
             },

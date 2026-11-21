@@ -12,8 +12,8 @@ from .framing import fit_views, working_preview_sizes
 from .imaging import fit_size, linear_to_srgb
 from .models import Plan, Unprocessable
 from .optics import (
-    LensGrid, angular_domains, angular_response, exact_slot_coverage, physical_slot, print_quanta,
-    response_report, solid_slot_coverage,
+    LensGrid, angular_domains, angular_response, build_grid, physical_slot, print_quanta,
+    response_report,
 )
 from .storage import digest_object
 from .visual import chart_png, png_bytes, scalar_palette
@@ -67,13 +67,13 @@ def render_print(registered, plan):
         raise Unprocessable("Enable at least two views to build a proof.")
     plan.check_sampling(count)
     width, height = plan.sheet.size
-    grid = LensGrid(plan.lens, plan.sheet.dpi, width, height)
+    grid = build_grid(plan, width, height)
     output = np.zeros((height, width, 3), dtype=np.float32)
     seen = np.zeros((height, width), dtype=np.float32)
     width_composite, height_composite = fit_size((width, height), 950)
     support_counts = []
     weights_by_view = []
-    method = solid_slot_coverage if plan.sampling.method == "solid" else exact_slot_coverage
+    method = plan.sampling.method
     reverse = plan.sheet.mount == "reverse"
     fitted_views = fit_views(registered, width, height, plan.sheet, plan.framing.cover)
     for index, image in enumerate(fitted_views):
@@ -83,7 +83,7 @@ def render_print(registered, plan):
         total = 0.0
         for start in range(0, height, PRINT_BLOCK):
             stop = min(start + PRINT_BLOCK, height)
-            weights = method(grid, start, stop, slot, count, side=plan.sheet.mount)
+            weights = grid.coverage(method, start, stop, slot, count, side=plan.sheet.mount)
             output[start:stop] += source[start:stop] * weights[..., None]
             seen[start:stop] += support[start:stop] * weights
             total += float(np.sum(weights, dtype=np.float64))
@@ -107,13 +107,29 @@ def render_print(registered, plan):
         "views": support_counts,
         "angular_windows": angular_domains(grid, [view.record for view in registered.views]),
     }
+    if grid.split_mm is not None:
+        metadata["two_piece"] = split_report(grid, plan, seen)
     return PrintOutput(plate, display, seen, grid, metadata)
+
+
+def split_report(grid, plan, seen):
+    """What the preview can and cannot resolve around a two-piece seam."""
+    layout = grid.split_layout
+    left = grid.face_mm(plan.sheet.mount) < grid.split_mm
+    gap = grid.gap_columns(plan.sheet.mount)
+    return {
+        **layout,
+        "supported_fraction_left": round(float(seen[:, left].mean()), 6),
+        "supported_fraction_right": round(float(seen[:, ~left].mean()), 6),
+        "gap_supported_fraction": round(float(seen[:, gap].mean()), 6) if gap.any() else None,
+        "reading": "The gap follows its neighbour and is left blank; each piece keeps its own measured lens.",
+    }
 
 
 def inspect_angle(registered, plan, angle):
     width, height = working_preview_sizes(plan.sheet, 800)
     true_width, true_height = plan.sheet.size
-    grid = LensGrid(plan.lens, plan.sheet.dpi, true_width, true_height)
+    grid = build_grid(plan, true_width, true_height)
     count = len(registered.views)
     weights, phase = angular_response(grid, angle, count, plan.sampling)
     linear = np.zeros((height, width, 3), dtype=np.float32)
@@ -122,6 +138,8 @@ def inspect_angle(registered, plan, angle):
         linear += view.linear * weights[index]
         visible += view.support * weights[index]
     photo = Image.fromarray(linear_to_srgb(linear))
+    if grid.split_mm is not None:
+        photo = seam_overlay(photo, grid, plan, width, height)
     model = response_report(grid, [angle], [view.record for view in registered.views], plan.sampling)[0]
     return {
         **model,
@@ -132,12 +150,75 @@ def inspect_angle(registered, plan, angle):
     }, photo
 
 
+def seam_overlay(photo, grid, plan, width, height):
+    """Mark the piece boundary and the unresolved strip on a working-size preview."""
+    picture = photo.convert("RGB")
+    draw = ImageDraw.Draw(picture)
+    step_x = width / grid.width
+    side = plan.sheet.mount
+    gap = grid.gap_columns(side)
+    if gap.any():
+        columns = np.flatnonzero(gap)
+        x0 = round(int(columns.min()) * step_x)
+        x1 = max(x0 + 1, round((int(columns.max()) + 1) * step_x))
+        draw.rectangle((x0, 0, x1, height), fill=(86, 92, 99))
+    boundary = round(grid.face_x_mm(grid.split_mm, side) * step_x)
+    draw.line((boundary, 0, boundary, height), fill=(247, 204, 99), width=2)
+    return picture
+
+
+def seam_detail(grid, plan):
+    """An exaggerated close-up of the seam for the preview, at device resolution."""
+    guard = grid.guard_mm
+    pair = plan.two_piece
+    near = min(grid.split_mm, pair.seam_mm) if pair.overlap_mm > 0 else grid.split_mm
+    far = max(grid.split_mm, pair.seam_mm) if pair.overlap_mm > 0 else grid.split_mm
+    margin = max(guard * .75, grid.period_pixels * grid.step * 1.5, 0.35)
+    span = (far - near) + 2 * margin
+    span = max(1.6, min(span, grid.width_mm))
+    left_mm = max(0.0, (near + far) / 2 - span / 2)
+    right_mm = min(grid.width_mm, (near + far) / 2 + span / 2)
+    side = plan.sheet.mount
+    edge_columns = grid.face_x_mm(np.asarray([left_mm, right_mm - grid.step * .5]), side)
+    left_px = int(np.min(edge_columns))
+    right_px = int(np.max(edge_columns)) + 1
+    rows = min(grid.height, 220)
+    top = max(0, grid.height // 2 - rows // 2)
+    columns = np.arange(left_px, right_px)
+    face = grid.face_mm(side)[columns]
+    pixels = np.full((rows, len(columns), 3), 236, dtype=np.uint8)
+    for index, piece in enumerate(grid.pieces()):
+        choose = (face < grid.split_mm) if index == 0 else (face >= grid.split_mm)
+        phase = (face[choose] - piece.shear * (top + rows / 2) * grid.step) / piece.mm_per_lens + piece.phase
+        fade = (np.mod(phase, 1) < .5)
+        pixels[:, choose] = np.where(fade[:, None], 120, 232)
+    gap = grid.gap_columns(side)[columns]
+    pixels[:, gap] = [120, 124, 130]
+    overlap = pair.overlap_mm
+    if overlap > 0:
+        # The lower piece continues under the overlapping piece; tint that concealed strip.
+        start, stop = pair.overlap_face()
+        hidden = (face >= start) & (face <= stop)
+        pixels[:, hidden] = (pixels[:, hidden] * .55 + np.array([154, 201, 190]) * .45).astype(np.uint8)
+    enlarge = max(1, min(8, 900 // max(1, len(columns))))
+    picture = Image.fromarray(pixels).resize((len(columns) * enlarge, rows), Image.Resampling.NEAREST)
+    draw = ImageDraw.Draw(picture)
+    edges = np.flatnonzero((face[:-1] < grid.split_mm) != (face[1:] < grid.split_mm))
+    boundary = (int(edges[0]) + 1) * enlarge if edges.size else 0
+    draw.line((boundary, 0, boundary, rows), fill=(247, 204, 99), width=2)
+    return png_bytes(picture), {
+        "face_mm": [round(left_mm, 4), round(right_mm, 4)], "device_pixels": [left_px, right_px],
+        "enlargement": enlarge, "guard_mm": round(guard, 6), "top_piece": plan.two_piece.top,
+        "mount": side,
+    }
+
+
 def coverage_preview(grid, count, side, width=760, height=350):
     origin_y = max(0, min(grid.height - height, grid.height // 2 - height // 2))
     origin_x = max(0, min(grid.width - width, grid.width // 2 - width // 2))
     rows = np.arange(origin_y, min(origin_y + height, grid.height))
     cols = np.arange(origin_x, min(origin_x + width, grid.width))
-    phase = grid.phase_at(grid.actual_side(cols[None, :], side), rows[:, None])
+    phase = grid.phase_matrix(rows[0], rows[-1] + 1, side)[:, cols]
     indices = (np.mod(phase, 1) * count).astype(np.int16)
     if grid.lens.order == "reverse":
         indices = count - 1 - indices
@@ -152,13 +233,19 @@ def proof_inspection(registered, plan, output):
     chart = chart_png([("Mixed angular fraction", x, y)], x_label="Observer angle (degrees)", y_label="Modelled leakage")
     coverage, roi = coverage_preview(output.grid, len(registered.views), plan.sheet.mount)
     angle, picture = inspect_angle(registered, plan, 0)
+    images = {"response": chart, "angles": png_bytes(picture), "view-map": coverage}
+    block = {}
+    if output.grid.split_mm is not None:
+        detail, block = seam_detail(output.grid, plan)
+        images["seam-detail"] = detail
     return {
         "bands": output.metadata,
         "quanta": print_quanta(output.grid, len(registered.views), plan.sampling, plan.sheet.mount),
         "preview_angle": angle,
         "angular_response": response,
         "band_map_box": roi,
-    }, {"response": chart, "angles": png_bytes(picture), "view-map": coverage}
+        "seam_detail": block,
+    }, images
 
 
 def _pdf_number(value):

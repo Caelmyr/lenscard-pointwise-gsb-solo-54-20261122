@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 
 from .imaging import fit_size, linear_luminance, linear_to_srgb, read_capture, sample_capture
 from .models import Position, Region, Unprocessable, integer, number, object_value, short_text, validate_keys
-from .optics import LensGrid, angular_domains, band_index, physical_slot
+from .optics import angular_domains, band_index, build_grid, physical_slot
 from .printing import one_raster_pdf
 from .visual import chart_png, overlay_regions, png_bytes, resize_report
 
@@ -64,7 +64,7 @@ def target_definition(records, plan):
         raise Unprocessable("Enable between two and eight views for an angle target.")
     plan.check_sampling(count)
     width, height = plan.sheet.size
-    grid = LensGrid(plan.lens, plan.sheet.dpi, width, height)
+    grid = build_grid(plan, width, height)
     if width < 120 or height < 19 * (count + 2):
         raise Unprocessable("The chosen stock gives the target too few measurable rows.")
     return grid, sorted(active_views, key=lambda item: item["position"])

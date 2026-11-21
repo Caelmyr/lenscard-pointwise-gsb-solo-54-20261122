@@ -4,7 +4,7 @@ import math
 import numpy as np
 
 from .models import Plan, Unprocessable, integer, number, object_value, ordered_views, validate_keys
-from .optics import LensGrid, angular_domains, angular_response, phase_to_angle, physical_slot
+from .optics import angular_domains, angular_response, build_grid, phase_to_angle, physical_slot
 from .visual import chart_png
 
 
@@ -88,7 +88,7 @@ def sweep_from_settings(card, records, config):
     views = ordered_views(records)
     plan = Plan.parse(card["config"])
     width, height = plan.sheet.size
-    grid = LensGrid(plan.lens, plan.sheet.dpi, width, height)
+    grid = build_grid(plan, width, height)
     steps = integer(obj.get("steps", 11), "angle stops", 4, 31)
     side = obj.get("side", "left_to_right")
     if side not in ("left_to_right", "right_to_left"):

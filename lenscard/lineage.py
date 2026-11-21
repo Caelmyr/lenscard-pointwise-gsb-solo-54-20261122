@@ -145,7 +145,7 @@ def validate_device_identity(library, proof):
     from io import BytesIO
     from PIL import Image
     import numpy as np
-    from .optics import LensGrid, phase_map_image
+    from .optics import build_grid, phase_map_image
     from .models import Unprocessable
 
     original = library.asset_bytes(proof["assets"]["plate"])
@@ -153,7 +153,7 @@ def validate_device_identity(library, proof):
     proof_plan = Plan.parse(proof["snapshot"]["identity"]["plan"])
     count = sum(1 for view in proof["snapshot"]["identity"]["views"] if view["enabled"])
     w, h = proof_plan.sheet.size
-    grid = LensGrid(proof_plan.lens, proof_plan.sheet.dpi, w, h)
+    grid = build_grid(proof_plan, w, h)
     with Image.open(BytesIO(original)) as image:
         h_density = image.info.get("dpi", (0, 0))
         if image.size != (w, h):

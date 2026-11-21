@@ -20,6 +20,13 @@ const cardVersion = () => state.card.version;
 const angles = () => state.card.config.lens.latitude;
 const simpleFields = (rows) => group(rows.map(([label,name,value,options='step="0.001"']) => field(label,name,value,'number',options)));
 const viewChoices = () => state.card.views.map(v => [v.id, v.title]);
+const twoPieceFrom = v => ({
+    enabled: v.two_piece === 'on',
+    seam_mm: Number(v.seam_mm), overlap_mm: Number(v.overlap_mm),
+    edge_guard_pitches: Number(v.edge_guard_pitches), top: v.top,
+    left: {lpi: Number(v.left_lpi), phase: Number(v.left_phase), shear: Number(v.left_shear)},
+    right: {lpi: Number(v.right_lpi), phase: Number(v.right_phase), shear: Number(v.right_shear)},
+});
 
 async function library() {
     const [available, samples] = await Promise.all([ask('/api/library'), ask('/api/samples')]);
@@ -66,7 +73,7 @@ function renderSidebar() {
 function stageImage() {
     if (state.stage === 'original') return view() ? `${api()}/views/${view().id}/preview` : null;
     if (state.stage === 'angular') return state.stageMods.angular || state.draftPreview?.images.angles;
-    if (state.stage === 'print') return state.draftPreview?.images['print-preview'] || state.stageMods.print;
+    if (state.stage === 'print') return state.stageMods.print || state.draftPreview?.images['seam-overview'] || state.draftPreview?.images['print-preview'];
     return state.stageMods.inspect;
 }
 function renderStage() {
@@ -85,6 +92,7 @@ function renderStage() {
 }
 function renderComposition() {
     const {lens, sheet, framing, sampling} = state.card.config;
+    const pair = state.card.config.two_piece || {};
     return `<form class="controls" data-form="settings">
         ${field('Card title','title',state.card.title)}
         <h2>Lens and stock</h2>
@@ -97,6 +105,21 @@ function renderComposition() {
                   select('Print side','mount',[['face','Observer front'],['reverse','Back mount']],sheet.mount),
                   select('Paper','paper',[['white','Bright white'],['warm','Warm'],['matte','Matte']],sheet.paper),
                   select('Sampling','method',[['solid','Device dot center'],['coverage','Area coverage']],sampling.method)])}
+        <h2>Two-piece lens</h2>
+        ${check('Join two measured lens pieces','two_piece',pair.enabled)}
+        ${simpleFields([
+            ['Seam from left (mm)','seam_mm',pair.seam_mm ?? sheet.width_mm/2],
+            ['Overlap width (mm)','overlap_mm',pair.overlap_mm ?? 0],
+            ['Unresolved edge (pitches)','edge_guard_pitches',pair.edge_guard_pitches ?? 1]])}
+        ${select('Overlapping piece','top',[['left','Left piece on top'],['right','Right piece on top']], pair.top || 'left')}
+        ${group([
+            field('Left pitch (LPI)','left_lpi',pair.left?.lpi ?? lens.lpi),
+            field('Right pitch (LPI)','right_lpi',pair.right?.lpi ?? lens.lpi),
+            field('Left phase (cycles)','left_phase',pair.left?.phase ?? lens.phase),
+            field('Right phase (cycles)','right_phase',pair.right?.phase ?? lens.phase),
+            field('Left side drift (mm/mm)','left_shear',pair.left?.shear ?? lens.shear),
+            field('Right side drift (mm/mm)','right_shear',pair.right?.shear ?? lens.shear)])}
+        <div class="row">${button('Preview two-piece lay-up','two-piece-preview')}</div>
         <h2>Source framing</h2>
         ${group([select('Canvas','frame_mode',[['center','Reference frame'],['shared','Common coverage']],framing.mode),
                   select('Fit','cover',[['fill','Crop to fill'],['fit','Fit with margins']],framing.cover),
@@ -111,11 +134,18 @@ function renderPreviewActions(){
     const result = state.draftPreview;
     if (!result) return '';
     const r = result.report;
+    const pair = r.bands?.two_piece;
     return `<hr><h2>Inspected candidate</h2>${metrics([['View count', r.bands.views.length],
         ['Device period', format(r.quanta.device_dots_per_lens) + ' px'],
         ['Supported raster', format(r.bands.supported_print_fraction*100) + '%'],
         ['Physical card', r.bands.requested_mm.join(' × ') + ' mm']])}
-        <div class="row">${button('Keep proof for approval','save-proof','','orange')}${button('Band map','preview-detail','view-map')}${button('Angle response','preview-detail','response')}</div>
+        ${pair?.enabled ? metrics([
+            ['Two pieces', `${pair.pieces[0].name} ${format(pair.pieces[0].lpi,3)} LPI / ${pair.pieces[1].name} ${format(pair.pieces[1].lpi,3)} LPI`],
+            ['Seam / boundary', `${format(pair.seam_mm)} / ${format(pair.boundary_mm)} mm`],
+            ['Overlapping piece', titleWords(pair.top || 'none')],
+            ['Blank strip', pair.gap_mm.length ? `${format(pair.gap_mm[0][1]-pair.gap_mm[0][0],3)} mm wide at ${format(pair.gap_mm[0][0],2)}–${format(pair.gap_mm[0][1],2)} mm` : 'none']]) : ''}
+        <div class="row">${button('Keep proof for approval','save-proof','','orange')}${button('Band map','preview-detail','view-map')}${button('Angle response','preview-detail','response')}
+        ${pair?.enabled ? button('Seam detail','preview-detail','seam-detail') + button('Seam overview','preview-detail','seam-overview') + button('Plain raster','preview-detail','print-preview') : ''}</div>
         ${readout(r,'Print proof settings')}`;
 }
 function renderInspection() {
@@ -236,6 +266,14 @@ const actions = {
         state.stage = 'print';
         redraw();
     },
+    'two-piece-preview': async () => {
+        const form = document.querySelector('form[data-form=settings]');
+        const two_piece = twoPieceFrom(values(form));
+        if (!two_piece.enabled) throw Error('Enable the two-piece lens to preview a joined lay-up.');
+        state.draftPreview = await ask(`${api()}/two-piece-preview`,'POST',{two_piece,angle:state.angle});
+        state.stage = 'print';
+        redraw();
+    },
     'preview-detail': key => modal(titleWords(key), img(state.draftPreview.images[key],titleWords(key))),
     'save-proof': () => dialogForm('Keep print proof','save-proof',field('Proof title','title',`Draft ${cardVersion()}`),'Keep proof'),
     'open-proof': async id => {const {proof}=await ask(`${api()}/proofs/${id}`); proofModal(proof);},
@@ -265,6 +303,7 @@ const forms = {
             sheet:{width_mm:Number(v.width),height_mm:Number(v.height),dpi:Number(v.dpi),mount:v.mount,paper:v.paper},
             framing:{mode:v.frame_mode,cover:v.cover,fit_motion:v.fit_motion==='on',reference:v.reference||null,frame:numbers(v.frame)},
             sampling:{method:v.method,aperture:Number(v.aperture)},
+            two_piece:twoPieceFrom(v),
         };
         await ask(api(),'PUT',{version:cardVersion(),title:v.title,note:v.note,config});
         await openCard(state.card.id);notice('Draft settings saved.');

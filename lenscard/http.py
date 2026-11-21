@@ -20,7 +20,7 @@ from .rectify import rectify_board
 from .schedule import observation_review, observation_sheet, sweep_from_settings
 from .version_compare import compare_versions
 from .models import (
-    Capacity, Missing, Unprocessable, WorkbenchError, flag, integer,
+    Capacity, Missing, Plan, Unprocessable, WorkbenchError, flag, integer,
     number, object_value, require_id, short_text, validate_keys,
 )
 from .printcheck import device_contact_sheet, measure_ruler_pitch, read_device_region, verify_physical_size
@@ -242,6 +242,22 @@ def register_creation(app, library, work):
             job = CardJob(library, card_id)
             angle = number(body.get("angle", 0), "display angle", -85, 85)
             return job.preview(angle).public()
+
+    @app.post("/api/cards/<card_id>/two-piece-preview")
+    def preview_two_piece(card_id):
+        """Render the displayed draft with a proposed two-piece lay-up, without saving it."""
+        body = _json()
+        validate_keys(body, {"two_piece", "angle"})
+        with work.entry():
+            job = CardJob(library, card_id)
+            config = {**job.plan.public(), "two_piece": object_value(body.get("two_piece"), "two-piece lens")}
+            plan = Plan.parse(config)
+            angle = number(body.get("angle", 0), "display angle", -85, 85)
+            preview = CardJob(library, card_id, override=plan.public())
+            reply = preview.preview(angle).public()
+        reply["report"]["proposed"] = True
+        reply["report"]["kind"] = "two-piece-preview"
+        return reply
 
     @app.post("/api/cards/<card_id>/proofs")
     def retain_print(card_id):

@@ -208,6 +208,113 @@ class Lens:
 
 
 @dataclass(frozen=True)
+class LensPatch:
+    """One measured lens piece within a two-piece card."""
+
+    lpi: float = 50
+    phase: float = 0
+    shear: float = 0
+
+    @classmethod
+    def parse(cls, data, base: "Lens"):
+        obj = object_value(data, "lens piece")
+        validate_keys(obj, {"lpi", "phase", "shear"}, "lens piece")
+        return cls(
+            lpi=number(obj.get("lpi", base.lpi), "piece pitch lines per inch", 10, 180),
+            phase=number(obj.get("phase", base.phase), "piece phase in cycles", -0.5, 0.5),
+            shear=number(obj.get("shear", base.shear), "piece side drift per millimetre", -0.25, 0.25),
+        )
+
+    def lens(self, base: "Lens"):
+        return Lens(self.lpi, self.phase, self.shear, base.order, base.latitude)
+
+    @property
+    def mm_per_lens(self):
+        return 25.4 / self.lpi
+
+    def public(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SplitLens:
+    """Seam, overlap and per-piece calibration for a two-piece lens lay-up."""
+
+    enabled: bool = False
+    seam_mm: float = 27.0
+    overlap_mm: float = 0.0
+    top: str = "left"
+    edge_guard_pitches: float = 1.0
+    left: LensPatch = field(default_factory=LensPatch)
+    right: LensPatch = field(default_factory=LensPatch)
+
+    @classmethod
+    def parse(cls, data, base_lens: "Lens", sheet: "Sheet"):
+        obj = object_value(data, "two-piece lens")
+        validate_keys(
+            obj, {"enabled", "seam_mm", "overlap_mm", "top", "edge_guard_pitches", "left", "right"},
+            "two-piece lens",
+        )
+        pair = cls(
+            enabled=flag(obj.get("enabled", False), "two-piece lens"),
+            seam_mm=number(obj.get("seam_mm", sheet.width_mm / 2), "seam position in millimetres", 0.5, sheet.width_mm - 0.5),
+            overlap_mm=number(obj.get("overlap_mm", 0), "overlap width in millimetres", 0, sheet.width_mm / 2),
+            top=choice(obj.get("top", "left"), "overlapping lens", ("left", "right")),
+            edge_guard_pitches=number(obj.get("edge_guard_pitches", 1), "unresolved edge in lens pitches", 0, 6),
+            left=LensPatch.parse(obj.get("left", {}), base_lens),
+            right=LensPatch.parse(obj.get("right", {}), base_lens),
+        )
+        if not pair.enabled:
+            return pair
+        width = sheet.width_mm
+        if pair.overlap_mm > 0 and pair.top == "left" and pair.seam_mm + pair.overlap_mm > width - 0.5:
+            raise Unprocessable("The left piece would extend past the card edge. Move the seam or reduce the overlap.")
+        if pair.overlap_mm > 0 and pair.top == "right" and pair.seam_mm - pair.overlap_mm < 0.5:
+            raise Unprocessable("The right piece would extend past the card edge. Move the seam or reduce the overlap.")
+        guard = pair.guard_mm()
+        if pair.overlap_mm > 0:
+            if guard >= min(pair.boundary_mm, width - pair.boundary_mm):
+                raise Unprocessable("The unresolved cut-edge allowance is wider than the piece it belongs to.")
+        elif 2 * guard >= width:
+            raise Unprocessable("The unresolved cut-edge allowances do not fit on the card.")
+        return pair
+
+    def guard_mm(self):
+        if self.overlap_mm > 0:
+            piece = self.top_piece()
+        else:
+            piece = self.left if self.left.mm_per_lens >= self.right.mm_per_lens else self.right
+        return self.edge_guard_pitches * piece.mm_per_lens
+
+    @property
+    def boundary_mm(self):
+        """Face-x where the visible piece changes, allowing for overlap."""
+        if self.overlap_mm <= 0:
+            return self.seam_mm
+        return self.seam_mm + self.overlap_mm if self.top == "left" else self.seam_mm - self.overlap_mm
+
+    def top_piece(self):
+        return {"left": self.left, "right": self.right}[self.top]
+
+    def overlap_face(self):
+        """Face-x span where the overlapping piece covers the lower piece."""
+        if self.overlap_mm <= 0:
+            return None
+        return [round(min(self.seam_mm, self.boundary_mm), 6), round(max(self.seam_mm, self.boundary_mm), 6)]
+
+    def public(self):
+        return {
+            "enabled": self.enabled,
+            "seam_mm": self.seam_mm,
+            "overlap_mm": self.overlap_mm,
+            "top": self.top,
+            "edge_guard_pitches": self.edge_guard_pitches,
+            "left": self.left.public(),
+            "right": self.right.public(),
+        }
+
+
+@dataclass(frozen=True)
 class Sheet:
     width_mm: float = 54
     height_mm: float = 68
@@ -334,16 +441,20 @@ class Plan:
     sheet: Sheet = field(default_factory=Sheet)
     framing: Framing = field(default_factory=Framing)
     sampling: Sampling = field(default_factory=Sampling)
+    two_piece: SplitLens = field(default_factory=SplitLens)
 
     @classmethod
     def parse(cls, data):
         obj = object_value(data, "card settings")
-        validate_keys(obj, {"lens", "sheet", "framing", "sampling"}, "card settings")
+        validate_keys(obj, {"lens", "sheet", "framing", "sampling", "two_piece"}, "card settings")
+        lens = Lens.parse(obj.get("lens", {}))
+        sheet = Sheet.parse(obj.get("sheet", {}))
         return cls(
-            Lens.parse(obj.get("lens", {})),
-            Sheet.parse(obj.get("sheet", {})),
+            lens,
+            sheet,
             Framing.parse(obj.get("framing", {})),
             Sampling.parse(obj.get("sampling", {})),
+            SplitLens.parse(obj.get("two_piece", {}), lens, sheet),
         )
 
     def check_sampling(self, views):
@@ -353,9 +464,17 @@ class Plan:
                 "The printer has fewer device dots per lens than active views. Raise DPI, choose a coarser lens or disable views.",
                 details={"active_views": views, "dots_per_lens": round(period, 3)},
             )
+        if self.two_piece.enabled:
+            for name, piece in (("left", self.two_piece.left), ("right", self.two_piece.right)):
+                piece_period = self.sheet.dpi / piece.lpi
+                if views > piece_period:
+                    raise Unprocessable(
+                        "One lens piece has fewer device dots per lens than active views. Raise DPI, choose a coarser piece or disable views.",
+                        details={"piece": name, "active_views": views, "dots_per_lens": round(piece_period, 3)},
+                    )
 
     def public(self):
-        return {**asdict(self), "framing": self.framing.public()}
+        return {**asdict(self), "framing": self.framing.public(), "two_piece": self.two_piece.public()}
 
 
 def ordered_views(views, *, minimum=2):

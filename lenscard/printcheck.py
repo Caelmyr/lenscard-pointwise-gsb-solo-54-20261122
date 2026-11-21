@@ -10,7 +10,7 @@ from scipy import ndimage, signal
 
 from .imaging import fit_size, linear_luminance, read_capture, sample_capture
 from .models import Conflict, Plan, Region, Unprocessable, integer, number, object_value, validate_keys
-from .optics import LensGrid, band_index, view_index
+from .optics import LensGrid, band_index, build_grid, view_index
 from .printing import one_raster_pdf
 from .visual import chart_png, overlay_regions, png_bytes, resize_report
 
@@ -44,7 +44,7 @@ class DeviceFile:
     def from_record(cls, library, proof):
         plan = Plan.parse(proof["snapshot"]["identity"]["plan"])
         width, height = plan.sheet.size
-        grid = LensGrid(plan.lens, plan.sheet.dpi, width, height)
+        grid = build_grid(plan, width, height)
         file = library.asset_bytes(proof["assets"]["plate"])
         with Image.open(BytesIO(file)) as image:
             raster = np.asarray(image.convert("RGB"))
