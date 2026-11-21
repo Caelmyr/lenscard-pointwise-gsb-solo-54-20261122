@@ -318,6 +318,31 @@ class Library:
                 new.append(view_id)
             return [self._view(db, card_id, view_id) for view_id in new]
 
+    def add_synthesized_view(self, card_id, frame, settings, *, version):
+        with self.database(write=True) as db:
+            self._version(db, card_id, version)
+            existing = self._views(db, card_id)
+            if len(existing) >= MAX_VIEWS:
+                raise Capacity(f"Reserve at most {MAX_VIEWS} views in one card.")
+            if sum(v["bytes"] for v in existing) + frame["bytes"] > MAX_CARD_SOURCE_BYTES:
+                raise Capacity("The original view bytes exceed this card's local budget.")
+            view_id = storage_id()
+            setting = ViewSetting.parse(settings, {"title": frame["name"], "position": frame["position"]})
+            db.execute(
+                "INSERT INTO views(" + VIEW_FIELDS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    view_id, card_id, frame["sha"], frame["name"], frame["width"], frame["height"],
+                    frame["bytes"], encode_json(frame["information"]), setting.title, setting.position,
+                    int(setting.enabled), setting.exposure_ev, utc_now(),
+                ),
+            )
+            self._event(
+                db, card_id, view_id, "mid-view-synthesized",
+                "Added a synthesized middle view; the two originals remain unchanged.",
+                {"sha": frame["sha"], "fingerprint": frame["information"].get("synthesized", {}).get("fingerprint")},
+            )
+            return self._view(db, card_id, view_id)
+
     @staticmethod
     def _view(db, card_id, view_id):
         row = db.execute(

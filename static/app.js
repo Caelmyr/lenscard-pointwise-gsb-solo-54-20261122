@@ -3,6 +3,7 @@ import {
     metrics, modal, notice, numbers, optionRows, readout, select, submit, textarea, titleWords, values,
 } from './ui.js';
 import {physicalActions, physicalForms} from './metrology.js';
+import {handleMidAction, openMidview} from './midview.js';
 
 const state = {
     library: [], samples: [], tools: {}, card: null, proofs: [], measurements: [], events: [],
@@ -58,7 +59,7 @@ function renderSidebar() {
         <h1>${esc(card.title)}</h1><div class="stamp">Draft ${card.version}${card.synthetic ? ' · Synthetic' : ''}</div>
         <div class="viewlist">${card.views.map(item => `<button type="button" data-action="choose-view" data-value="${item.id}" class="${item.id === state.view ? 'selection' : ''}">
             ${img(`${api()}/views/${item.id}/preview`, '')}<b>${esc(item.title)}</b><small>${format(item.position)}° · ${item.enabled ? 'Active' : 'Off'}</small></button>`).join('')}</div>
-        <div class="side-buttons">${button('Add view', 'add-view', '', 'orange')}${view() ? button('Edit view', 'edit-view') : ''}</div>
+        <div class="side-buttons">${button('Add view', 'add-view', '', 'orange')}${button('Synthesize middle view', 'midview-open', '', 'orange')}${view() ? button('Edit view', 'edit-view') : ''}</div>
         ${view() ? `<hr><div class="side-buttons">${link('Original', `${api()}/views/${view().id}/original`)}${button('Source info', 'source-info')}</div>` : ''}
         <hr><div class="side-buttons">${link('View set ZIP', `${api()}/export-views`)}</div>
     </aside>`;
@@ -221,6 +222,7 @@ function proofModal(proof) {
 const actions = {
     card: id => openCard(id),
     sample: async key => {const {card} = await ask(`/api/samples/${key}`,'POST'); await openCard(card.id);},
+    'midview-open': () => openMidview({state, api, cardVersion, openCard}),
     'choose-view': id => {state.view=id; state.stage='original'; redraw();},
     'close-dialog': closeDialog,
     'add-view': () => dialogForm('Add an original view','add-view',field('Image file','view','','file','accept="image/*,.tif,.tiff" required')+
@@ -302,7 +304,14 @@ async function handle(node, fn) {
 }
 document.addEventListener('click', event=>{
     const node=event.target.closest('[data-action]');
-    if (node) handle(node, ()=>actions[node.dataset.action]?.(node.dataset.value));
+    if (node) {
+        const action = node.dataset.action;
+        if (action.startsWith('mid-')) {
+            handle(node, ()=>handleMidAction(action, node.dataset.value, {state, api, cardVersion, openCard}));
+            return;
+        }
+        handle(node, ()=>actions[node.dataset.action]?.(node.dataset.value));
+    }
     if (event.target.id==='stage-image' && state.stage==='original') {
         const region=event.target.getBoundingClientRect();
         state.point=[(event.clientX-region.left)/region.width,(event.clientY-region.top)/region.height].map(x=>Math.max(0,Math.min(1,x)));

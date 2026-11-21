@@ -234,6 +234,22 @@ def register_creation(app, library, work):
         with work.entry():
             return CardJob(library, card_id).apply_grid(body.get("ticks"), _card_version(body), body.get("fit_sha"))
 
+    @app.post("/api/cards/<card_id>/midview/preview")
+    def midview_preview(card_id):
+        body = _json()
+        validate_keys(body, {"synthesis"})
+        with work.entry():
+            return CardJob(library, card_id).preview_middle(body).public()
+
+    @app.post("/api/cards/<card_id>/midview/commit")
+    def midview_commit(card_id):
+        body = _json()
+        validate_keys(body, {"synthesis", "version", "angle", "title"})
+        with work.entry():
+            job = CardJob(library, card_id)
+            result = job.add_middle(body, _card_version(body))
+        return jsonify(result), 201
+
     @app.post("/api/cards/<card_id>/preview")
     def preview_print(card_id):
         body = _json()

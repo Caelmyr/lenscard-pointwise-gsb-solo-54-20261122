@@ -9,8 +9,10 @@ import numpy as np
 from .calibration import TestGrid, best_global_lens, calibration_fingerprint, fit_chart, target_assets
 from .diagnostics import compare_views, exposure_report, load_sample, pattern_report, profile_line, sharpness_report, spot_values
 from .framing import inspect_framing, prepare_registered
+from .imaging import encode_preview
+from .midview import commit_midview, preview_midview
 from .models import (
-    Conflict, Missing, Plan, Unprocessable, number, object_value, require_sha, validate_keys,
+    Conflict, Missing, Plan, Unprocessable, number, object_value, require_sha, short_text, validate_keys,
 )
 from .opticaltest import measured_angle_set, render_angle_target
 from .optics import LensGrid
@@ -200,6 +202,39 @@ class CardJob:
         else:
             raise Missing("This inspection is not available.")
         return Result({**report, **self.read_job()}, image)
+
+    def preview_middle(self, body):
+        spec = object_value(body.get("synthesis"), "synthesis")
+        result = preview_midview(self.library, self.views, spec)
+        report = {**result["report"], "synthesis_fingerprint": result["fingerprint"]}
+        return Result({**report, **self.read_job()}, result["images"])
+
+    def add_middle(self, body, version):
+        spec = object_value(body.get("synthesis"), "synthesis")
+        if version != self.version:
+            raise Conflict("The card changed. Re-open the synthesis before adding the middle view.")
+        png, decoded, information, _fingerprint, result = commit_midview(self.library, self.views, spec)
+        left = next(view for view in self.views if view["id"] == spec["left_view"])
+        right = next(view for view in self.views if view["id"] == spec["right_view"])
+        angle = number(
+            body.get("angle", left["position"] + result.geometry["mid"] * (right["position"] - left["position"])),
+            "observation angle", -85, 85,
+        )
+        if any(abs(view["position"] - angle) < 0.01 for view in self.views if view["enabled"]):
+            raise Unprocessable(
+                "Another active view already uses this angle. Pick a different middle position or edit an angle.",
+                field="angle",
+            )
+        digest = self.library.store_source(png, encode_preview(decoded))
+        frame = {
+            "name": short_text(body.get("title") or "Synthesized middle view", "view title"),
+            "sha": digest, "position": angle,
+            "width": decoded.width, "height": decoded.height, "bytes": len(png), "information": information,
+        }
+        item = self.library.add_synthesized_view(
+            self.card_id, frame, {"title": frame["name"], "position": angle, "enabled": True}, version=version,
+        )
+        return {"view": item, "report": {**result.geometry, **result.attribution, "warnings": result.warnings}}
 
     def measured_optics(self, files, settings, proof_id=None):
         if proof_id:

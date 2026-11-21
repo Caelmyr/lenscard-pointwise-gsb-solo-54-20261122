@@ -119,3 +119,18 @@ dialog form { display: grid; gap: 10px; }
     .stagebar { flex-shrink: 0; }
     .stage-control { flex-shrink: 0; }
 }
+dialog:has(.midview-form) { width: min(97vw, 1180px); max-height: 94vh; overflow: auto; }
+.mid-panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mid-pane { border: 1px solid var(--border); border-radius: 8px; padding: 9px; background: var(--panel); display: grid; gap: 7px; }
+.mid-pane.active { border-color: var(--accent); }
+.mid-pane header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.mid-canvas { position: relative; cursor: crosshair; border-radius: 5px; overflow: hidden; background: var(--canvas); }
+.mid-canvas img { display: block; width: 100%; height: auto; max-height: 46vh; object-fit: contain; }
+.mark-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.mid-pane .row.tight { gap: 5px; }
+.mid-pane .row.tight button { padding: 6px 8px; font-size: 12px; flex: 1 1 auto; }
+.mid-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mid-preview-grid figure { margin: 0; border: 1px solid var(--border); border-radius: 7px; padding: 7px; background: var(--panel); }
+.mid-preview-grid figcaption { font: 11px var(--mono); color: var(--subtext); margin-top: 5px; text-align: center; }
+.mid-warnings { margin: 6px 0; padding-left: 18px; color: var(--hover); }
+@media (max-width: 760px) { .mid-panes, .mid-preview-grid { grid-template-columns: 1fr; } }
