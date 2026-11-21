@@ -8,9 +8,10 @@ import numpy as np
 
 from .calibration import TestGrid, best_global_lens, calibration_fingerprint, fit_chart, target_assets
 from .diagnostics import compare_views, exposure_report, load_sample, pattern_report, profile_line, sharpness_report, spot_values
+from .exposure_match import exposure_match, parse_marks, proposal_fingerprint
 from .framing import inspect_framing, prepare_registered
 from .models import (
-    Conflict, Missing, Plan, Unprocessable, number, object_value, require_sha, validate_keys,
+    Conflict, Missing, Plan, Unprocessable, integer, number, object_value, require_sha, validate_keys,
 )
 from .opticaltest import measured_angle_set, render_angle_target
 from .optics import LensGrid
@@ -220,6 +221,49 @@ class CardJob:
     def retain_measurement(self, tool, title, values):
         report = self.tool(tool, values)
         return retain_result(self.library, self.card_id, title, tool, report)
+
+    def match_exposure(self, body):
+        obj = object_value(body, "inspection")
+        if "fit_motion" not in obj:
+            obj = {**obj, "fit_motion": self.plan.framing.fit_motion}
+        report, images = exposure_match(self.library, self.views, obj)
+        return Result({**report, **self.read_job()}, images, report["views"])
+
+    def apply_exposure_match(self, body):
+        obj = object_value(body, "exposure decision")
+        validate_keys(obj, {"marks", "discord_ev", "fit_motion", "version", "proposal_sha"},
+                      "exposure decision")
+        self.check_receipt_loose(integer(obj.get("version"), "draft version", 0, 99999))
+        marks = parse_marks(obj)
+        threshold = number(obj.get("discord_ev", 0.18), "inconsistency threshold in stops", 0.02, 1.5)
+        fingerprint = proposal_fingerprint(self.views, marks, threshold)
+        if fingerprint != obj.get("proposal_sha"):
+            raise Conflict("The originals or the marked references changed. Re-run the exposure preview before applying it.")
+        report, _ = exposure_match(self.library, self.views, obj)
+        confident = [row for row in report["views"] if row["confident"]]
+        if not confident:
+            raise Unprocessable("No view has a consistent wall reference, so there is nothing confident to apply.")
+        updated = self.library.apply_exposure_match(
+            self.card_id, confident, self.version, fingerprint=fingerprint,
+        )
+        return {
+            "kind": "angle-exposure-applied",
+            "proposal_sha": fingerprint,
+            "applied": [
+                {"view_id": row["view_id"], "title": row["title"],
+                 "exposure_ev": next(item["exposure_ev"] for item in updated if item["id"] == row["view_id"]),
+                 "previous_ev": row["current_ev"]}
+                for row in confident
+            ],
+            "kept_manual": [
+                {"view_id": row["view_id"], "title": row["title"], "exposure_ev": row["current_ev"]}
+                for row in report["views"] if not row["confident"]
+            ],
+        }
+
+    def check_receipt_loose(self, expected_version):
+        if expected_version != self.version:
+            raise Conflict("The card changed. Re-run the exposure preview against the current draft.")
 
 
 def retain_result(library, card_id, title, tool, result, proof_id=None):

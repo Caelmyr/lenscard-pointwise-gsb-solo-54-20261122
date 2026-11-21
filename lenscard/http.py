@@ -37,6 +37,7 @@ BODY_LIMIT = 140 * 1024**2
 STATIC = Path(__file__).resolve().parents[1] / "static"
 TOOLS = {
     "exposure": "Exposure and clipping",
+    "exposure-match": "Angle exposure match (wall reference)",
     "line": "Native line profile",
     "spot": "Original pixel probe",
     "sharpness": "Edge energy",
@@ -233,6 +234,18 @@ def register_creation(app, library, work):
         validate_keys(body, {"ticks", "version", "fit_sha"})
         with work.entry():
             return CardJob(library, card_id).apply_grid(body.get("ticks"), _card_version(body), body.get("fit_sha"))
+
+    @app.post("/api/cards/<card_id>/exposure-match")
+    def exposure_match_preview(card_id):
+        with work.entry():
+            job = CardJob(library, card_id)
+            return job.match_exposure(_json()).public()
+
+    @app.post("/api/cards/<card_id>/exposure-match/apply")
+    def exposure_match_apply(card_id):
+        with work.entry():
+            job = CardJob(library, card_id)
+            return {"result": job.apply_exposure_match(_json())}
 
     @app.post("/api/cards/<card_id>/preview")
     def preview_print(card_id):

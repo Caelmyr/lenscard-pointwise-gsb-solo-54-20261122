@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -346,6 +347,38 @@ class Library:
                 {"old_position": current["position"], "new_position": spec.position},
             )
             return self._view(db, card_id, view_id)
+
+    def apply_exposure_match(self, card_id, proposals, version, *, fingerprint):
+        """Write matched exposure EV for confident views; uncertain views stay untouched."""
+        updates = []
+        for entry in proposals:
+            view_id = require_id(entry.get("view_id"), "view")
+            exposure = float(entry["proposed_ev"])
+            if not -3.0 <= exposure <= 3.0 or not math.isfinite(exposure):
+                raise Unprocessable("Matched exposure must stay between -3 and 3 EV.")
+            updates.append((view_id, exposure))
+        with self.database(write=True) as db:
+            self._version(db, card_id, version)
+            applied = []
+            for view_id, exposure in updates:
+                current = self._view(db, card_id, view_id)
+                if current is None:
+                    raise Missing("This original is not in this card.")
+                rounded = round(exposure, 3)
+                if abs(current["exposure_ev"] - rounded) < 1e-9:
+                    continue
+                db.execute(
+                    "UPDATE views SET exposure_ev=? WHERE card_id=? AND id=?",
+                    (rounded, card_id, view_id),
+                )
+                applied.append({"view_id": view_id, "title": current["title"],
+                                "old_ev": current["exposure_ev"], "new_ev": rounded})
+            self._event(
+                db, card_id, card_id, "exposure-matched",
+                "Applied wall-reference exposure matching to confident angle views.",
+                {"proposal_sha": fingerprint, "applied": applied, "version": version},
+            )
+            return self._views(db, card_id)
 
     def material_snapshot(self, card_id):
         with self.database() as db:

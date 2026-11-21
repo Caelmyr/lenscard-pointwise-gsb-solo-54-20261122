@@ -118,7 +118,12 @@ function renderPreviewActions(){
         <div class="row">${button('Keep proof for approval','save-proof','','orange')}${button('Band map','preview-detail','view-map')}${button('Angle response','preview-detail','response')}</div>
         ${readout(r,'Print proof settings')}`;
 }
+function defaultWallMarks() {
+    const active = state.card.views.filter(item => item.enabled);
+    return JSON.stringify(active.map(item => ({view: item.id, region: [0.06, 0.08, 0.42, 0.26]})), null, 2);
+}
 function renderInspection() {
+    const matchTool = state.lastTool?.tool === 'exposure-match';
     return `<form class="controls" data-form="inspect">
         ${select('Inspection','tool',toolChoices(),state.lastTool?.tool || 'exposure')}
         ${group([select('Original','view',viewChoices(),state.view),
@@ -130,8 +135,35 @@ function renderInspection() {
           ${select('Spectrum direction','direction',[['across','Across'],['down','Down']], 'across')}
           ${select('Paper simulation','soft_method',[['compress','Compress chroma'],['clip','Clip'],['neutral','Neutral']], 'compress')}
           ${textarea('Density patches or lens marks (JSON)','rows','[]',7600)}
-        </div></details><div class="row">${submit('Run inspection')}</div>
+        </div></details>
+        <details ${matchTool ? 'open' : ''}><summary>Wall exposure references</summary><div class="controls">
+          ${textarea('Wall rectangles per view (JSON marks)','wall_marks',defaultWallMarks(),7600)}
+          ${field('Inconsistency threshold (EV)','discord_ev',.18,'number','step=".01" min=".02" max="1.5"')}
+          ${check('Align translation and scale before matching','fit_motion',Boolean(state.lastTool?.payload?.fit_motion))}
+        </div></details>
+        <div class="row">${submit('Run inspection')}</div>
         </form>${renderReading()}`;
+}
+function renderExposureMatch(report) {
+    const confident = report.views.filter(row => row.confident);
+    const uncertain = report.views.filter(row => !row.confident);
+    const rowLine = row => `${row.index}. ${esc(row.title)} (${format(row.angle)}°): ${format(row.current_ev,3)} EV → ${format(row.proposed_ev,3)} EV (${row.delta_ev >= 0 ? '+' : ''}${format(row.delta_ev,3)})`;
+    return `<section class="exposure-match">
+      <h3>Matched wall references</h3>
+      <div class="metrics">${[['References', report.summary.references],
+          ['Consistent', report.summary.consistent_references],
+          ['Inconsistent', report.summary.inconsistent_references],
+          ['Confident views', report.summary.confident_views],
+          ['Uncertain views', report.summary.uncertain_views]].map(([k,v]) =>
+          `<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')}</div>
+      <h4>Confident — will be written back</h4>
+      <ul>${confident.map(row => `<li>${rowLine(row)}</li>`).join('') || '<li class="muted">None.</li>'}</ul>
+      <h4>Uncertain — current manual EV retained</h4>
+      <ul>${uncertain.map(row => `<li>${row.index}. ${esc(row.title)} (${format(row.angle)}°): ${format(row.current_ev,3)} EV — ${esc(row.reason)}</li>`).join('') || '<li class="muted">None.</li>'}</ul>
+      ${report.inconsistent.length ? `<h4>Inconsistent reference pairs</h4><ul>${report.inconsistent.map(pair =>
+          `<li>${esc(pair.left.slice(0,8))}… ↔ ${esc(pair.right.slice(0,8))}…: ${format(pair.delta_ev,3)} EV over ${pair.overlap_pixels} px</li>`).join('')}</ul>` : ''}
+      <div class="row">${confident.length ? button('Apply confident exposure values','apply-exposure-match','','orange') : ''}</div>
+    </section>`;
 }
 function renderReading() {
     const data = state.reading;
@@ -144,6 +176,7 @@ function renderReading() {
        <div class="row">${pictures.map(([name])=>button(titleWords(name),'result-view',name)).join('')}
        ${state.lastTool ? button('Keep inspection','keep-reading') : ''}
        ${data.pdf ? link('Download actual-size PDF',data.pdf,'lenscard-target.pdf') : ''}${data.csv ? link('Download measurements CSV',data.csv,'lenscard-readings.csv') : ''}</div>
+       ${report.kind === 'angle-exposure-match' ? renderExposureMatch(report) : ''}
        ${readout(report)}
        </section>`;
 }
@@ -200,6 +233,11 @@ function bodyForTool(tool, v) {
     if (tool === 'soft-proof') body.settings = {method:v.soft_method};
     if (tool === 'density') body.patches = JSON.parse(v.rows || '[]');
     if (tool === 'lens-fit') body.ticks = JSON.parse(v.rows || '[]');
+    if (tool === 'exposure-match') {
+        body.marks = JSON.parse(v.wall_marks || '[]');
+        body.discord_ev = Number(v.discord_ev);
+        body.fit_motion = v.fit_motion === 'on';
+    }
     return body;
 }
 function displayReading(data) {
@@ -253,6 +291,19 @@ const actions = {
         modal(m.title,pictures+csv+readout(m.report));
     },
     'result-view': key => {state.stageMods.inspect=state.reading.images[key];state.stage='inspect';redraw();},
+    'apply-exposure-match': async () => {
+        const last = state.lastTool;
+        const report = state.reading.report;
+        const result = await ask(`${api()}/exposure-match/apply`, 'POST', {
+            marks: last.payload.marks, discord_ev: last.payload.discord_ev,
+            fit_motion: Boolean(last.payload.fit_motion), version: report.draft_version,
+            proposal_sha: report.proposal_sha,
+        });
+        await openCard(state.card.id, {keep: true});
+        state.tab = 'inspect';
+        redraw();
+        notice(`Applied matched exposure to ${result.result.applied.length} view(s); ${result.result.kept_manual.length} kept manual.`);
+    },
 };
 const forms = {
     new: async (v) => {const {card}=await ask('/api/cards','POST',{title:v.title,note:v.note}); closeDialog(); await openCard(card.id);},
