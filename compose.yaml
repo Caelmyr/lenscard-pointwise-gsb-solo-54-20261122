@@ -1,0 +1,22 @@
+name: solo57-lenscard
+services:
+  web:
+    build:
+      context: .
+      args:
+        LENSCARD_DEPENDENCY_IMAGE: ${LENSCARD_DEPENDENCY_IMAGE:-python:3.11-slim}
+    image: ${LENSCARD_IMAGE:-solo57-lenscard:1.0}
+    init: true
+    network_mode: bridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${LENSCARD_PORT:-19957}:8000"
+    volumes:
+      - card-library:/var/lib/lenscard
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()"]
+      interval: 8s
+      timeout: 4s
+      retries: 6
+volumes:
+  card-library:
