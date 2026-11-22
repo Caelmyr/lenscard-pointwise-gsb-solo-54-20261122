@@ -8,6 +8,8 @@ const state = {
     library: [], samples: [], tools: {}, card: null, proofs: [], measurements: [], events: [],
     draftPreview: null, retained: null, lastTool: null, reading: null, stage: 'original',
     view: null, point: [0.5, 0.5], tab: 'compose', angle: 0, stageMods: {}, sequence: 0, archive: null,
+    marks: {}, markKind: null, captureOrder: null, orderChoice: 0, spanDegrees: 24, dropChoices: {},
+    orderAnchors: null,
 };
 const api = () => `/api/cards/${state.card.id}`;
 const view = () => state.card?.views.find(row => row.id === state.view);
@@ -40,6 +42,11 @@ async function openCard(id, {keep = false} = {}) {
         state.retained = null;
         state.tab = 'compose';
         state.angle = 0;
+        state.marks = {};
+        state.markKind = null;
+        state.captureOrder = null;
+        state.orderAnchors = null;
+        state.dropChoices = {};
     }
     if (!view()) state.view = state.card.views[0]?.id || null;
     if (!keep) resetDraft();
@@ -69,6 +76,33 @@ function stageImage() {
     if (state.stage === 'print') return state.draftPreview?.images['print-preview'] || state.stageMods.print;
     return state.stageMods.inspect;
 }
+const viewTitle = id => state.card.views.find(item => item.id === id)?.title || id;
+function currentMarks() {
+    return (state.marks[state.view] || []);
+}
+function markCandidates() {
+    return [
+        ['far', 'wall left'],
+        ['far', 'wall right'],
+        ['near', 'near A'],
+        ['near', 'near B'],
+    ];
+}
+function marksForRequest() {
+    const entries = [];
+    for (const [viewId, pairs] of Object.entries(state.marks)) {
+        for (const [kind, signature, point] of pairs) entries.push({view: viewId, kind, signature, point});
+    }
+    return entries;
+}
+function renderMarkOverlay() {
+    const short = signature => signature === 'wall left' ? 'L' : signature === 'wall right' ? 'R'
+        : signature === 'near A' ? 'A' : 'B';
+    const marks = currentMarks();
+    return `${marks.map(([kind, signature, point]) => `<span class="order-mark ${kind}"
+        style="left:${point[0] * 100}%;top:${point[1] * 100}%" title="${esc(signature)}">${short(signature)}</span>`).join('')}
+        ${state.markKind ? '' : `<span class="probe-cross" style="left:${state.point[0] * 100}%;top:${state.point[1] * 100}%" aria-hidden="true"></span>`}`;
+}
 function renderStage() {
     const source = stageImage();
     const stages = [['original','Original'], ['angular','Observed angle'], ['print','Print raster'], ['inspect','Inspection']];
@@ -77,8 +111,7 @@ function renderStage() {
         <div class="stagebar"><div role="group" aria-label="Image representation">
         ${stages.map(([key,text])=>`<button type="button" data-action="stage" data-value="${key}" aria-pressed="${state.stage===key}">${text}</button>`).join('')}</div>
         <span class="stamp">${esc(mode)}</span></div>
-        ${source ? `<div class="stage-canvas">${img(source, mode, 'stage-image')}${state.stage === 'original' ?
-          `<span class="probe-cross" style="left:${state.point[0]*100}%;top:${state.point[1]*100}%" aria-hidden="true"></span>` : ''}</div>` :
+        ${source ? `<div class="stage-canvas">${img(source, mode, 'stage-image')}${state.stage === 'original' ? renderMarkOverlay() : ''}</div>` :
           '<div class="empty">Select an original or build a card preview.</div>'}
         <div class="stage-control"><label>Viewing angle<input id="angle-slider" type="range" min="${-angles()}" max="${angles()}" step=".2" value="${state.angle}"><output id="angle-value">${format(state.angle)}°</output></label></div>
     </section>`;
@@ -170,12 +203,59 @@ function renderMetrology() {
         ${button('Record print lineage','lineage')}${button('Compare two raster versions','version-compare')}
         ${button('Scan device band coverage','device-audit')}` : ''}</div>${renderReading()}`;
 }
+function renderCaptureOrder() {
+    const report = state.captureOrder?.report;
+    const marked = Object.values(state.marks).filter(pairs => pairs.length).length;
+    if (!report) {
+        return `<div class="controls"><p class="muted">Pick a mark type, then click the same point in each original. Mark both wall points in every capture and a corner on one or two foreground objects. Frames that differ only because the phone was turned are registered before they are compared.</p>
+        <div class="row">${markCandidates().map(([kind,signature]) =>
+            `<button type="button" data-action="pick-mark" data-value="${kind}|${signature}" aria-pressed="${state.markKind?.[1]===signature}">
+             ${esc(signature)}${kind==='far'?' (wall)':' (corner)'}</button>`).join('')}</div>
+        <p class="muted">${marked} of ${state.card.views.length} originals marked. ${currentMarks().length} marks on ${esc(view()?.title || 'this view')}.</p>
+        ${state.orderAnchors ? `<p class="muted">Remembered left: ${esc(viewTitle(state.orderAnchors.left))} · right: ${esc(viewTitle(state.orderAnchors.right))}</p>` : '<p class="muted">Optional: name the left and right shots you remember, so the marks settle the direction.</p>'}
+        <div class="row">${button('Undo mark on this view','undo-mark')}${button('Remembered left/right shots','remember-anchors')}</div>
+        <div class="row">${button('Recover order','recover-order','','orange')}${button('Load teaching photographs','handheld-sample')}</div></div>`;
+    }
+    const names = id => viewTitle(id);
+    const warnings = report.warnings.map(text => `<li>${esc(text)}</li>`).join('');
+    const notes = report.direction?.note ? `<p class="muted">${esc(report.direction.note)}</p>` : '';
+    if (report.status !== 'ready') {
+        return `<div class="controls"><h3>No order yet</h3><p>${esc(report.reason || 'The marks do not yet fix a left-to-right order.')}</p>
+        ${warnings ? `<ul class="order-warnings">${warnings}</ul>` : ''}<div class="row">${button('Back to marks','edit-marks')}</div>
+        ${readout(report,'Mark readings')}</div>`;
+    }
+    const order = report.orders[state.orderChoice] || report.orders[0];
+    const slotRows = report.slots.map((slot, index) => {
+        const choice = state.dropChoices[index] || slot.views[0];
+        const options = slot.views.map(id => `<option value="${id}"${choice===id?' selected':''}>${esc(names(id))}</option>`).join('');
+        const keep = slot.views.length > 1
+            ? `<label>Keep one<select data-action="keep-slot" data-value="${index}">${options}</select></label>`
+            : `<small>${esc(names(slot.views[0]))}</small>`;
+        return `<article class="order-slot"><b>${index + 1}. ${format(slot.position * 100, 0)}% along</b>${keep}
+            ${slot.views.length > 1 ? '<small>Same angle: these frames read as one position from their parallax.</small>' : ''}</article>`;
+    }).join('');
+    const candidates = report.orders.map((candidate, index) => `<button type="button" data-action="choose-order" data-value="${index}"
+        aria-pressed="${state.orderChoice===index}">${candidate.preferred?'Suggested order':'Order ' + (index + 1)}</button>`).join('');
+    return `<div class="controls"><h3>Left-to-right reading</h3>
+        <p class="muted">${esc(order.reason)}</p>${notes}
+        <div class="row">${candidates}</div>
+        <ol class="order-list">${order.views.map(id => `<li>${esc(names(id))}</li>`).join('')}</ol>
+        ${slotRows}
+        ${report.groups.length ? '<p class="muted">Choose which frame to keep in each same-angle group; the others are switched off.</p>' : ''}
+        ${report.unplaced.length ? `<p class="muted">Could not place: ${report.unplaced.map(id=>esc(names(id))).join(', ')}. They are left out.</p>` : ''}
+        ${report.unmarked?.length ? `<p class="muted">Not marked, so left out of this ordering: ${report.unmarked.map(item=>esc(item.title)).join(', ')}.</p>` : ''}
+        ${warnings ? `<ul class="order-warnings">${warnings}</ul>` : ''}
+        ${group([field('Angles span ± (°)','span_degrees',state.spanDegrees,'number','step="1" min="1" max="85"')])}
+        <p class="muted">Kept views are spaced evenly across this span in the confirmed order.</p>
+        <div class="row">${button('Apply to angle list','apply-order','','orange')}${button('Back to marks','edit-marks')}</div>
+        ${readout(report,'Mark readings and residuals')}</div>`;
+}
 function renderControls() {
     const tabs = [['compose','Compose'],['inspect','Inspect'],['records','Records'],['physical','Metrology']];
     const content = {compose: renderComposition, inspect: renderInspection, records: renderRecords, physical: renderMetrology};
     return `<aside class="side" aria-label="Card controls"><div class="control-tabs" role="tablist" aria-label="Workflow">
      ${tabs.map(([key,text])=>`<button type="button" role="tab" aria-selected="${key===state.tab}" data-action="tab" data-value="${key}">${text}</button>`).join('')}</div>
-     ${content[state.tab]()}</aside>`;
+     ${state.tab === 'compose' ? renderCaptureOrder() + content.compose() : content[state.tab]()}</aside>`;
 }
 function redraw() {
     const app = byId('application');
@@ -253,8 +333,97 @@ const actions = {
         modal(m.title,pictures+csv+readout(m.report));
     },
     'result-view': key => {state.stageMods.inspect=state.reading.images[key];state.stage='inspect';redraw();},
+    'pick-mark': value => {
+        const [kind, signature] = value.split('|');
+        state.markKind = state.markKind?.[1] === signature ? null : [kind, signature];
+        redraw();
+    },
+    'undo-mark': () => {
+        if (state.view && state.marks[state.view]?.length) state.marks[state.view].pop();
+        state.captureOrder = null;
+        redraw();
+    },
+    'recover-order': async () => {
+        const marks = marksForRequest();
+        if (!marks.length) throw Error('Mark both wall points and a near corner first.');
+        const result = await ask(`${api()}/capture-order`,'POST',{marks,anchors:state.orderAnchors});
+        state.captureOrder = result;
+        state.orderChoice = 0;
+        state.dropChoices = {};
+        redraw();
+    },
+    'remember-anchors': () => {
+        if (state.card.views.length < 2) throw Error('Import at least two originals first.');
+        dialogForm('Remembered left and right shots','remember-anchors',
+            select('Leftmost shot','left',state.card.views.map(item => [item.id,item.title]),state.orderAnchors?.left || '')+
+            select('Rightmost shot','right',state.card.views.map(item => [item.id,item.title]),state.orderAnchors?.right || '')+
+            '<p class="muted">Mark the two shots you remember taking from the left and from the right. The marks then settle the direction instead of the foreground assumption.</p>',
+            'Use these two shots');
+    },
+    'choose-order': index => {state.orderChoice=Number(index);redraw();},
+    'keep-slot': (value, node) => {state.dropChoices[Number(value)]=node.value;redraw();},
+    'edit-marks': () => {state.captureOrder=null;redraw();},
+    'handheld-sample': async () => {
+        const {set} = await ask('/api/samples/handheld');
+        const card = state.card;
+        const existing = new Set(card.views.map(item => item.title));
+        let version = cardVersion();
+        for (const shot of set.shots) {
+            if (existing.has(shot.title)) continue;
+            const payload = await fetch(`/api/samples/handheld/${shot.index}`);
+            const data = new FormData();
+            data.set('view', await payload.blob(), shot.title);
+            data.set('version', version);
+            data.set('angle', 0);
+            data.set('title', shot.title);
+            await ask(`${api()}/views`,'POST',data);
+            version += 1;
+        }
+        await openCard(card.id,{keep:true});
+        const fresh = await ask(api());
+        const byTitle = Object.fromEntries(fresh.card.views.map(item => [item.title, item.id]));
+        state.marks = {};
+        for (const mark of set.marks) {
+            const viewId = byTitle[mark.title];
+            if (!viewId) continue;
+            (state.marks[viewId] ||= []).push([mark.kind, mark.signature, mark.point]);
+        }
+        state.orderAnchors = {left: byTitle[set.expected_left], right: byTitle[set.expected_right]};
+        state.captureOrder = await ask(`${api()}/capture-order`,'POST',{marks:marksForRequest(),anchors:state.orderAnchors});
+        state.orderChoice = 0;
+        notice('Synthetic teaching photographs imported and marked. They are not a camera record.');
+        redraw();
+    },
+    'apply-order': async () => {
+        const result = state.captureOrder;
+        const report = result.report;
+        const choice = report.orders[state.orderChoice] || report.orders[0];
+        const disabled = [];
+        report.groups.forEach(group => {
+            const index = report.slots.findIndex(slot => slot.views.join() === group.views.join());
+            const keep = state.dropChoices[index] || group.views[0];
+            group.views.filter(id => id !== keep).forEach(id => disabled.push(id));
+        });
+        report.unplaced.forEach(id => { if (!disabled.includes(id)) disabled.push(id); });
+        (report.unmarked || []).forEach(item => { if (!disabled.includes(item.view)) disabled.push(item.view); });
+        const order = Array.from(new Set(choice.slots.flat().filter(id => !disabled.includes(id))));
+        const span = Number(document.querySelector('[name=span_degrees]')?.value || state.spanDegrees);
+        state.spanDegrees = span;
+        const answer = await ask(`${api()}/capture-order/apply`,'POST',{
+            marks: marksForRequest(), anchors: state.orderAnchors, order, disabled,
+            version: cardVersion(), report_sha: result.report_sha, span_degrees: span,
+        });
+        await openCard(state.card.id,{keep:true});
+        state.captureOrder = null;
+        notice(`Angle list written for ${answer.angles.length} views.`);
+    },
 };
 const forms = {
+    'remember-anchors': v => {
+        state.orderAnchors = v.left && v.right && v.left !== v.right ? {left:v.left,right:v.right} : null;
+        state.captureOrder = null;
+        closeDialog(); redraw();
+    },
     new: async (v) => {const {card}=await ask('/api/cards','POST',{title:v.title,note:v.note}); closeDialog(); await openCard(card.id);},
     'add-view': async (v,node) => {const data=new FormData(node);data.set('version',cardVersion());await ask(`${api()}/views`,'POST',data);closeDialog();await openCard(state.card.id);},
     'edit-view': async v => {await ask(`${api()}/views/${view().id}`,'PUT',{version:cardVersion(),settings:{
@@ -302,10 +471,20 @@ async function handle(node, fn) {
 }
 document.addEventListener('click', event=>{
     const node=event.target.closest('[data-action]');
-    if (node) handle(node, ()=>actions[node.dataset.action]?.(node.dataset.value));
+    if (node) handle(node, ()=>actions[node.dataset.action]?.(node.dataset.value, node));
     if (event.target.id==='stage-image' && state.stage==='original') {
         const region=event.target.getBoundingClientRect();
         state.point=[(event.clientX-region.left)/region.width,(event.clientY-region.top)/region.height].map(x=>Math.max(0,Math.min(1,x)));
+        if (state.markKind && state.view) {
+            const [kind, signature] = state.markKind;
+            const pairs = (state.marks[state.view] ||= []);
+            const existing = pairs.findIndex(([k,s]) => k===kind && s===signature);
+            if (existing >= 0) pairs[existing] = [kind, signature, state.point];
+            else pairs.push([kind, signature, state.point]);
+            state.captureOrder = null;
+            redraw();
+            return;
+        }
         const cursor=document.querySelector('.probe-cross');
         if (cursor) { cursor.style.left=state.point[0]*100+'%'; cursor.style.top=state.point[1]*100+'%'; }
     }
@@ -319,7 +498,10 @@ document.addEventListener('input',event=>{
     if(event.target.id==='angle-slider') {const output=byId('angle-value');if(output) output.textContent=format(Number(event.target.value))+'°';}
 });
 document.addEventListener('change',event=>{
-    if(event.target.id==='angle-slider') handle(null,()=>showAngle(Number(event.target.value)));
+    if(event.target.id==='angle-slider') {handle(null,()=>showAngle(Number(event.target.value)));return;}
+    if(event.target.name==='span_degrees') {state.spanDegrees=Number(event.target.value)||state.spanDegrees;return;}
+    const node=event.target.closest('[data-action="keep-slot"]');
+    if(node) handle(node,()=>actions['keep-slot'](node.dataset.value,node));
 });
 byId('new-button').addEventListener('click',()=>dialogForm('New print card','new',field('Card title','title')+textarea('Working note','note'),'Create card'));
 byId('library-button').addEventListener('click',()=>handle(null,library));

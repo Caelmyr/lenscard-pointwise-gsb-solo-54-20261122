@@ -15,12 +15,14 @@ from .diagnostics import get_original_info
 from .imaging import frame_input
 from .device_audit import audit_raster
 from .lineage import lineage, source_coordinate_receipt
+from .marksample import SHOTS, shot_png, teaching_set
+from .ordering import Evidence, angle_list, confirm, order_digest, recover
 from .preflight import draft_preflight
 from .rectify import rectify_board
 from .schedule import observation_review, observation_sheet, sweep_from_settings
 from .version_compare import compare_versions
 from .models import (
-    Capacity, Missing, Unprocessable, WorkbenchError, flag, integer,
+    Capacity, Conflict, Missing, Unprocessable, WorkbenchError, flag, integer,
     number, object_value, require_id, short_text, validate_keys,
 )
 from .printcheck import device_contact_sheet, measure_ruler_pitch, read_device_region, verify_physical_size
@@ -203,6 +205,51 @@ def register_library(app, library):
     @app.get("/api/cards/<card_id>/views/<view_id>/information")
     def source_information(card_id, view_id):
         return {"result": get_original_info(library, card_id, view_id)}
+
+    @app.get("/api/samples/handheld")
+    def handheld_sample():
+        return {"set": teaching_set()}
+
+    @app.get("/api/samples/handheld/<int:index>")
+    def handheld_photo(index):
+        if not 0 <= index < len(SHOTS):
+            raise Missing("This teaching photograph does not exist.")
+        name, payload = shot_png(index)
+        return _media(payload, "image/png", name, download=True)
+
+    @app.post("/api/cards/<card_id>/capture-order")
+    def capture_order(card_id):
+        card, views = library.material_snapshot(card_id)
+        evidence = Evidence.parse(_json(), views)
+        report = _order_report(evidence, views)
+        return {"report": report, "report_sha": order_digest(report), "marked": len(evidence.captures)}
+
+    @app.post("/api/cards/<card_id>/capture-order/apply")
+    def apply_capture_order(card_id):
+        body = _json()
+        validate_keys(body, {"marks", "anchors", "sigma_px", "order", "positions", "span_degrees",
+                             "disabled", "version", "report_sha"}, "capture order")
+        card, views = library.material_snapshot(card_id)
+        evidence = Evidence.parse({"marks": body.get("marks"), "anchors": body.get("anchors"),
+                                   "sigma_px": body.get("sigma_px")}, views)
+        report = _order_report(evidence, views)
+        if report["status"] != "ready":
+            raise Conflict("Recover a complete left-to-right reading before writing the angle list.",
+                           details={"status": report["status"]})
+        if body.get("report_sha") != order_digest(report):
+            raise Conflict("The marks changed since this reading was shown. Recover the order again.")
+        kept = confirm(evidence, report, body.get("order"), body.get("disabled") or [])
+        records = [next(item for item in views if item["id"] == view) for view in kept]
+        angles = angle_list(records, body.get("positions"), body.get("span_degrees"))
+        updated, changes = library.apply_capture_order(
+            card_id, kept, angles, body.get("disabled") or [],
+            integer(body.get("version"), "draft version", 0, 99999), report,
+        )
+        return {"card": updated, "angles": angles,
+                "applied": [{"view": item["id"], "title": item["title"], "position": item["position"]}
+                            for item in sorted(updated["views"], key=lambda item: item["position"])
+                            if item["enabled"]],
+                "changed": changes}
 
 
 def register_creation(app, library, work):
@@ -417,6 +464,16 @@ def register_workbench_audits(app, library, work):
             card, records = library.material_snapshot(card_id)
             report, images = draft_preflight(library, card, records)
         return Result(report, images, report["records"]).public()
+
+
+def _order_report(evidence, views):
+    """Recovery report plus the originals that took no part in it."""
+    report = recover(evidence)
+    marked = {capture.view for capture in evidence.captures}
+    report["unmarked"] = [{"view": item["id"], "title": item["title"]}
+                          for item in sorted(views, key=lambda row: (row["title"].casefold(), row["id"]))
+                          if item["id"] not in marked]
+    return report
 
 
 def _b64_media(payload, mime):

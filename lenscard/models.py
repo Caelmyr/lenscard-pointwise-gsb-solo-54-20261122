@@ -358,6 +358,24 @@ class Plan:
         return {**asdict(self), "framing": self.framing.public()}
 
 
+def parse_angles(data, label="positions"):
+    """A left-to-right list of capture angles, one per kept view."""
+    if not isinstance(data, list):
+        raise WorkbenchError("Give the capture angles as a list.", field=label)
+    if not 2 <= len(data) <= MAX_VIEWS:
+        raise WorkbenchError(f"Give between 2 and {MAX_VIEWS} angles.", field=label)
+    return [number(value, "angle", -85, 85) for value in data]
+
+
+def parse_view_list(data, label="order"):
+    if not isinstance(data, list) or not data:
+        raise WorkbenchError("Choose the kept captures.", field=label)
+    values = [require_id(value, "view") for value in data]
+    if len(set(values)) != len(values):
+        raise WorkbenchError("A capture appears twice.", field=label)
+    return values
+
+
 def ordered_views(views, *, minimum=2):
     active = sorted((view for view in views if view["enabled"]), key=lambda view: view["position"])
     if len(active) < minimum:

@@ -119,3 +119,17 @@ dialog form { display: grid; gap: 10px; }
     .stagebar { flex-shrink: 0; }
     .stage-control { flex-shrink: 0; }
 }
+
+.order-mark { position: absolute; transform: translate(-50%, -50%); min-width: 22px; height: 22px; padding: 0 4px;
+    border-radius: 11px; display: grid; place-items: center; font: 700 11px/1 var(--mono); pointer-events: none;
+    box-shadow: 0 0 0 1px #14161b, 0 2px 6px #0008; }
+.order-mark.far { background: #2f6f8f; color: #eef8ff; }
+.order-mark.near { background: #9a5a2c; color: #fff3e6; }
+.order-list { margin: 6px 0 10px; padding-left: 20px; font: 12px/1.6 var(--mono); color: var(--subtext); }
+.order-slot { padding: 7px 0; border-bottom: 1px solid var(--border); display: grid; gap: 4px; }
+.order-slot b { font-size: 13px; }
+.order-slot select { width: 100%; }
+.order-warnings { margin: 6px 0; padding-left: 18px; color: var(--subtext); font-size: 12px; }
+.order-warnings li { margin: 3px 0; }
+[data-action=pick-mark][aria-pressed=true] { color: var(--accent); border-color: #826249; background: #352c28; }
+[data-action=choose-order][aria-pressed=true] { color: var(--accent); border-color: #826249; }

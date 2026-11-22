@@ -9,7 +9,7 @@ import tempfile
 
 from .models import (
     Capacity, Conflict, MAX_CARDS, MAX_VIEWS, Missing, Plan, Unprocessable,
-    ViewSetting, require_id, require_sha, short_text, storage_id, utc_now,
+    ViewSetting, parse_angles, parse_view_list, require_id, require_sha, short_text, storage_id, utc_now,
 )
 
 
@@ -346,6 +346,44 @@ class Library:
                 {"old_position": current["position"], "new_position": spec.position},
             )
             return self._view(db, card_id, view_id)
+
+    def apply_capture_order(self, card_id, order, positions, disabled, version, report):
+        """Write a recovered left-to-right order into view positions in one draft version."""
+        order = parse_view_list(order, "order")
+        positions = parse_angles(positions)
+        disabled = parse_view_list(disabled, "left-out captures") if disabled else []
+        if len(order) != len(positions):
+            raise Unprocessable("Give one angle for every kept capture.")
+        with self.database(write=True) as db:
+            self._version(db, card_id, version)
+            current = {item["id"]: item for item in self._views(db, card_id)}
+            if not set(order) <= set(current) or not set(disabled) <= set(current):
+                raise Missing("This capture is not in the card.")
+            if set(order) & set(disabled):
+                raise Conflict("A capture cannot be both kept and left out.")
+            if set(current) != set(order) | set(disabled):
+                raise Conflict("Choose every original either in the order or left out.",
+                               details={"missing": sorted(set(current) - set(order) - set(disabled))})
+            for left, right in zip(positions, positions[1:]):
+                if right - left < 0.01:
+                    raise Unprocessable("Write the angles in increasing left-to-right order.")
+            changes = 0
+            for view_id in disabled:
+                if current[view_id]["enabled"]:
+                    db.execute("UPDATE views SET enabled=0 WHERE card_id=? AND id=?", (card_id, view_id))
+                    changes += 1
+            for view_id, angle in zip(order, positions, strict=True):
+                if current[view_id]["position"] != angle or not current[view_id]["enabled"]:
+                    db.execute("UPDATE views SET position=?, enabled=1 WHERE card_id=? AND id=?",
+                               (angle, card_id, view_id))
+                    changes += 1
+            self._event(
+                db, card_id, card_id, "capture-order-applied",
+                "Wrote a marked left-to-right capture order into the angle list.",
+                {"order": order, "angles": positions, "left_out": disabled,
+                 "warnings": report.get("warnings", [])[:6]},
+            )
+        return self.get_card(card_id), changes
 
     def material_snapshot(self, card_id):
         with self.database() as db:
