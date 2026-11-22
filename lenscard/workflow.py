@@ -12,6 +12,7 @@ from .framing import inspect_framing, prepare_registered
 from .models import (
     Conflict, Missing, Plan, Unprocessable, number, object_value, require_sha, validate_keys,
 )
+from .subject import parse_subject_marks, plan_subject_framing
 from .opticaltest import measured_angle_set, render_angle_target
 from .optics import LensGrid
 from .printing import (
@@ -76,6 +77,22 @@ class CardJob:
     def layout(self):
         report, images = inspect_framing(self.prepared(), self.plan.sheet, self.plan.framing)
         return Result({**report, **self.read_job(), "kind": "framing"}, images, report["views"])
+
+    def subject_framing(self, marks):
+        parsed = parse_subject_marks(marks, self.views)
+        report, images = plan_subject_framing(self.prepared(), self.plan.sheet, parsed)
+        rows = [
+            {
+                "candidate": candidate["name"],
+                "view": view["title"],
+                "paper_fraction": view["paper_fraction"],
+                "subject_kept_fraction": view["subject_kept_fraction"],
+            }
+            for candidate in report["candidates"]
+            if candidate["feasible"]
+            for view in candidate["views"]
+        ]
+        return Result({**report, **self.read_job(), "kind": "subject-framing"}, images, rows)
 
     def viewing(self, angle):
         report, image = inspect_angle(self.prepared(), self.plan, angle)
@@ -166,6 +183,8 @@ class CardJob:
         body = object_value(values, "inspection")
         if name == "framing":
             return self.layout()
+        if name == "subject-framing":
+            return self.subject_framing(body.get("subjects"))
         if name == "registered-comparison":
             first = body.get("view")
             second = body.get("other")

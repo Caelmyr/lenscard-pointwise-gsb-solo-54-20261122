@@ -42,6 +42,7 @@ TOOLS = {
     "sharpness": "Edge energy",
     "texture": "Texture frequency",
     "framing": "Shared framing",
+    "subject-framing": "Subject-safe framing",
     "view-angle": "Observer angle preview",
     "registered-comparison": "Registered view comparison",
     "soft-proof": "Paper simulation",

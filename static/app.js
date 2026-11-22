@@ -8,6 +8,7 @@ const state = {
     library: [], samples: [], tools: {}, card: null, proofs: [], measurements: [], events: [],
     draftPreview: null, retained: null, lastTool: null, reading: null, stage: 'original',
     view: null, point: [0.5, 0.5], tab: 'compose', angle: 0, stageMods: {}, sequence: 0, archive: null,
+    subjects: {}, framingOverride: null,
 };
 const api = () => `/api/cards/${state.card.id}`;
 const view = () => state.card?.views.find(row => row.id === state.view);
@@ -15,7 +16,7 @@ const label = key => state.tools[key] || titleWords(key);
 const activeProof = () => state.retained || state.proofs.find(item => item.id === state.card.approval?.proof_id) || state.proofs[0];
 const toolChoices = () => optionRows(state.tools);
 const resetResult = () => { state.lastTool = null; state.reading = null; };
-const resetDraft = () => { state.draftPreview = null; state.stageMods = {}; resetResult(); };
+const resetDraft = () => { state.draftPreview = null; state.stageMods = {}; state.framingOverride = null; resetResult(); };
 const cardVersion = () => state.card.version;
 const angles = () => state.card.config.lens.latitude;
 const simpleFields = (rows) => group(rows.map(([label,name,value,options='step="0.001"']) => field(label,name,value,'number',options)));
@@ -40,6 +41,7 @@ async function openCard(id, {keep = false} = {}) {
         state.retained = null;
         state.tab = 'compose';
         state.angle = 0;
+        state.subjects = {};
     }
     if (!view()) state.view = state.card.views[0]?.id || null;
     if (!keep) resetDraft();
@@ -57,9 +59,10 @@ function renderSidebar() {
     return `<aside class="side" aria-label="Card originals">
         <h1>${esc(card.title)}</h1><div class="stamp">Draft ${card.version}${card.synthetic ? ' · Synthetic' : ''}</div>
         <div class="viewlist">${card.views.map(item => `<button type="button" data-action="choose-view" data-value="${item.id}" class="${item.id === state.view ? 'selection' : ''}">
-            ${img(`${api()}/views/${item.id}/preview`, '')}<b>${esc(item.title)}</b><small>${format(item.position)}° · ${item.enabled ? 'Active' : 'Off'}</small></button>`).join('')}</div>
+            ${img(`${api()}/views/${item.id}/preview`, '')}<b>${esc(item.title)}</b><small>${format(item.position)}° · ${item.enabled ? 'Active' : 'Off'}${state.subjects[item.id] ? ' · Subject' : ''}</small></button>`).join('')}</div>
         <div class="side-buttons">${button('Add view', 'add-view', '', 'orange')}${view() ? button('Edit view', 'edit-view') : ''}</div>
-        ${view() ? `<hr><div class="side-buttons">${link('Original', `${api()}/views/${view().id}/original`)}${button('Source info', 'source-info')}</div>` : ''}
+        ${view() ? `<hr><div class="side-buttons">${link('Original', `${api()}/views/${view().id}/original`)}${button('Source info', 'source-info')}${state.subjects[view().id] ? button('Clear subject', 'clear-subject') : ''}</div>
+        <p class="muted">Drag on the original to box a subject to protect, then run Subject-safe framing from Inspect.</p>` : ''}
         <hr><div class="side-buttons">${link('View set ZIP', `${api()}/export-views`)}</div>
     </aside>`;
 }
@@ -71,6 +74,7 @@ function stageImage() {
 }
 function renderStage() {
     const source = stageImage();
+    const mark = state.stage === 'original' && state.view ? state.subjects[state.view] : null;
     const stages = [['original','Original'], ['angular','Observed angle'], ['print','Print raster'], ['inspect','Inspection']];
     const mode = state.stage === 'original' ? 'Source image' : state.stage === 'angular' ? 'Optical model' : titleWords(state.stage);
     return `<section class="stage" aria-label="Image stage">
@@ -78,13 +82,15 @@ function renderStage() {
         ${stages.map(([key,text])=>`<button type="button" data-action="stage" data-value="${key}" aria-pressed="${state.stage===key}">${text}</button>`).join('')}</div>
         <span class="stamp">${esc(mode)}</span></div>
         ${source ? `<div class="stage-canvas">${img(source, mode, 'stage-image')}${state.stage === 'original' ?
-          `<span class="probe-cross" style="left:${state.point[0]*100}%;top:${state.point[1]*100}%" aria-hidden="true"></span>` : ''}</div>` :
+          `<span class="probe-cross" style="left:${state.point[0]*100}%;top:${state.point[1]*100}%" aria-hidden="true"></span>` : ''}${mark ?
+          `<span class="subject-rect" style="left:${mark[0]*100}%;top:${mark[1]*100}%;width:${(mark[2]-mark[0])*100}%;height:${(mark[3]-mark[1])*100}%"></span>` : ''}</div>` :
           '<div class="empty">Select an original or build a card preview.</div>'}
         <div class="stage-control"><label>Viewing angle<input id="angle-slider" type="range" min="${-angles()}" max="${angles()}" step=".2" value="${state.angle}"><output id="angle-value">${format(state.angle)}°</output></label></div>
     </section>`;
 }
 function renderComposition() {
-    const {lens, sheet, framing, sampling} = state.card.config;
+    const {lens, sheet, sampling} = state.card.config;
+    const framing = {...state.card.config.framing, ...(state.framingOverride || {})};
     return `<form class="controls" data-form="settings">
         ${field('Card title','title',state.card.title)}
         <h2>Lens and stock</h2>
@@ -103,6 +109,7 @@ function renderComposition() {
                   select('Reference original','reference',[['','Closest to center'],...viewChoices()],framing.reference||''),
                   check('Align global translation and scale','fit_motion',framing.fit_motion)])}
         ${field('Frame bounds (normalized)','frame',framing.frame.join(', '))}
+        ${state.framingOverride ? '<p class="muted">Candidate framing loaded from Subject-safe framing. Review it, then Save draft to use it on this card.</p>' : ''}
         ${textarea('Working note','note',state.card.note)}
         <div class="row">${submit('Save draft')} ${button('Build print preview','preview','','orange')}</div>
     </form>${renderPreviewActions()}`;
@@ -133,6 +140,18 @@ function renderInspection() {
         </div></details><div class="row">${submit('Run inspection')}</div>
         </form>${renderReading()}`;
 }
+function renderSubjectCandidates(report) {
+    return `<div class="candidate-grid">${report.candidates.map((c, i) => `<article>
+        <h3>${esc(c.label)}</h3>
+        ${c.feasible ? `${metrics([
+            ['Subjects kept', format(c.subject_kept_fraction*100, 1) + '%'],
+            ['Shared coverage', format(c.shared_cover_fraction*100, 1) + '%'],
+            ['Worst-view paper', format(c.worst_view_paper_fraction*100, 1) + '%'],
+            ['Window', `${c.window_px.width} × ${c.window_px.height} px`],
+        ])}<div class="row">${button('Use this framing', 'apply-framing', String(i), 'orange')}</div>`
+        : `<p class="muted">${esc(c.reason || 'Not feasible with these marks.')}</p>`}
+    </article>`).join('')}</div><p class="muted">${esc(report.message)}</p>`;
+}
 function renderReading() {
     const data = state.reading;
     if (!data) return '';
@@ -140,6 +159,7 @@ function renderReading() {
     const pictures = Object.entries(data.images || {});
     const title = label(report.kind || state.lastTool?.tool || 'inspection');
     return `<section class="results"><h2>${esc(title)}</h2>
+       ${report.kind === 'subject-framing' ? renderSubjectCandidates(report) : ''}
        ${pictures.length ? img(pictures[0][1], titleWords(pictures[0][0])) : ''}
        <div class="row">${pictures.map(([name])=>button(titleWords(name),'result-view',name)).join('')}
        ${state.lastTool ? button('Keep inspection','keep-reading') : ''}
@@ -200,6 +220,7 @@ function bodyForTool(tool, v) {
     if (tool === 'soft-proof') body.settings = {method:v.soft_method};
     if (tool === 'density') body.patches = JSON.parse(v.rows || '[]');
     if (tool === 'lens-fit') body.ticks = JSON.parse(v.rows || '[]');
+    if (tool === 'subject-framing') body.subjects = Object.entries(state.subjects).map(([view, frame]) => ({view, frame}));
     return body;
 }
 function displayReading(data) {
@@ -253,6 +274,15 @@ const actions = {
         modal(m.title,pictures+csv+readout(m.report));
     },
     'result-view': key => {state.stageMods.inspect=state.reading.images[key];state.stage='inspect';redraw();},
+    'apply-framing': index => {
+        const candidate = state.reading?.report.candidates?.[Number(index)];
+        if (!candidate?.apply) return;
+        state.framingOverride = candidate.apply;
+        state.tab = 'compose';
+        redraw();
+        notice('Candidate framing loaded into Compose. Save draft to use it on this card.');
+    },
+    'clear-subject': () => {delete state.subjects[state.view]; redraw();},
 };
 const forms = {
     new: async (v) => {const {card}=await ask('/api/cards','POST',{title:v.title,note:v.note}); closeDialog(); await openCard(card.id);},
@@ -300,10 +330,54 @@ async function handle(node, fn) {
     catch (error) {notice(error.message || 'Could not complete the operation.',true);}
     finally {if(node) node.disabled=false;}
 }
+const drag = {on:false, moved:false, skipClick:false, sx:0, sy:0, rect:null};
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const liveRect = () => document.querySelector('.stage-canvas .subject-rect.live');
+document.addEventListener('mousedown', event=>{
+    if (event.target.id==='stage-image' && state.stage==='original' && state.view && event.button===0) {
+        const rect=event.target.getBoundingClientRect();
+        drag.on=true; drag.moved=false; drag.skipClick=false; drag.rect=rect;
+        drag.sx=clamp01((event.clientX-rect.left)/rect.width);
+        drag.sy=clamp01((event.clientY-rect.top)/rect.height);
+        event.preventDefault();
+    }
+});
+document.addEventListener('mousemove', event=>{
+    if (!drag.on) return;
+    const x=clamp01((event.clientX-drag.rect.left)/drag.rect.width);
+    const y=clamp01((event.clientY-drag.rect.top)/drag.rect.height);
+    if (Math.hypot((x-drag.sx)*drag.rect.width,(y-drag.sy)*drag.rect.height)>7) drag.moved=true;
+    if (!drag.moved) return;
+    let node=liveRect();
+    if (!node) {
+        node=document.createElement('span');
+        node.className='subject-rect live';
+        document.querySelector('.stage-canvas')?.appendChild(node);
+    }
+    node.style.left=Math.min(drag.sx,x)*100+'%';
+    node.style.top=Math.min(drag.sy,y)*100+'%';
+    node.style.width=Math.abs(x-drag.sx)*100+'%';
+    node.style.height=Math.abs(y-drag.sy)*100+'%';
+});
+document.addEventListener('mouseup', event=>{
+    if (!drag.on) return;
+    drag.on=false;
+    const node=liveRect();
+    if (node) node.remove();
+    if (!drag.moved) return;
+    drag.skipClick=true;
+    const x=clamp01((event.clientX-drag.rect.left)/drag.rect.width);
+    const y=clamp01((event.clientY-drag.rect.top)/drag.rect.height);
+    const box=[Math.min(drag.sx,x),Math.min(drag.sy,y),Math.max(drag.sx,x),Math.max(drag.sy,y)];
+    if (box[2]-box[0]<0.01 || box[3]-box[1]<0.01) {notice('Draw a slightly larger subject box.',true);return;}
+    state.subjects[state.view]=box.map(v=>Number(v.toFixed(4)));
+    redraw();
+});
 document.addEventListener('click', event=>{
     const node=event.target.closest('[data-action]');
     if (node) handle(node, ()=>actions[node.dataset.action]?.(node.dataset.value));
     if (event.target.id==='stage-image' && state.stage==='original') {
+        if (drag.skipClick) { drag.skipClick=false; return; }
         const region=event.target.getBoundingClientRect();
         state.point=[(event.clientX-region.left)/region.width,(event.clientY-region.top)/region.height].map(x=>Math.max(0,Math.min(1,x)));
         const cursor=document.querySelector('.probe-cross');

@@ -24,6 +24,7 @@ For a native start, install the locked dependencies in a Python 3.11 virtual env
 | Profiles and edge energy | **Native line profile** and **Edge energy** show measured intensities, gradients and unsupported locations. |
 | Texture and grain | **Texture frequency** or **Approximate grain** helps distinguish recurring patterns and quiet-area variation. |
 | Registration and comparison | **Shared framing** reports aligned coverage. **Registered view comparison** presents image divider and signed differences in comparable locations. |
+| Subject-protected framing | **Subject-safe framing** keeps per-view subject boxes inside genuine shared coverage, names the view that cannot fit, and measures a paper-border fallback before any framing is saved. |
 | Stock simulation | **Paper simulation** compares source and approximate soft-proof appearance. **Density step response** reads explicitly marked patches. |
 | Pitch fitting | **Pitch target** builds a true-size pattern. **Fit marked lens lines** fits one global physical grid from indexed print locations and reports residuals. |
 | Direct optical isolation | **View isolation target** is printable. **Measure angle photographs** compares each intended band to neighbouring bands using local white and dark reference patches. |

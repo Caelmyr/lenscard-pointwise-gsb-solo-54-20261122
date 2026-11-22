@@ -65,6 +65,13 @@ a { color: var(--teal); }
 .stage-control { width: min(100%, 610px); margin-top: auto; }
 .stage-control label { display: grid; grid-template-columns: 92px 1fr 48px; gap: 11px; align-items: center; color: var(--subtext); }
 .probe-cross { height: 17px; width: 17px; border: 1px solid #fff4cd; border-radius: 99px; transform: translate(-50%, -50%); position: absolute; pointer-events: none; box-shadow: 0 0 0 1px #181812; }
+#stage-image { -webkit-user-drag: none; user-select: none; }
+.subject-rect { position: absolute; border: 2px solid #f2d479; box-shadow: 0 0 0 1px #17130a; border-radius: 2px; pointer-events: none; }
+.subject-rect::after { content: 'subject'; position: absolute; left: -2px; top: -20px; font: 10px var(--mono); color: #f2d479; background: #28221e; padding: 1px 6px; border-radius: 3px; }
+.subject-rect.live { border-style: dashed; }
+.candidate-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 9px; margin: 8px 0; }
+.candidate-grid article { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 10px; }
+.candidate-grid h3 { margin: 0 0 6px; font-size: 14px; }
 .control-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
 .control-tabs button { font-size: 13px; padding: 7px 10px; }
 .control-tabs [aria-selected=true] { color: var(--accent); font-weight: 700; border-color: #826249; }
