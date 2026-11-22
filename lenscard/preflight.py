@@ -146,6 +146,13 @@ def _format_inventory(entries):
     return png_bytes(canvas)
 
 
+def _paper_white(plan, library, card):
+    if not plan.sheet.paper.startswith("measured:"):
+        return None
+    from .tone import measured_paper
+    return measured_paper(library.measurement(card["id"], plan.sheet.paper.split(":", 1)[1])).white_coded
+
+
 def draft_preflight(library, card, records):
     plan = Plan.parse(card["config"])
     enabled = [item for item in records if item["enabled"]]
@@ -182,6 +189,7 @@ def draft_preflight(library, card, records):
         "dominant_oriented_dimensions": list(common) if common else None, "records": inventory,
         "angle_intervals": _angle_scatter(records), "predicted": predicted,
         "likely_renderable": renderable, "hard_findings": all_issues,
-        "format": {"paper_color": paper_rgb(plan.sheet).tolist(), "screen_size": list(working_preview_sizes(plan.sheet, 750))},
+        "format": {"paper_color": paper_rgb(plan.sheet, _paper_white(plan, library, card)).tolist(),
+                   "screen_size": list(working_preview_sizes(plan.sheet, 750))},
     }
     return report, {"source-coverage": _format_inventory(inventory)}

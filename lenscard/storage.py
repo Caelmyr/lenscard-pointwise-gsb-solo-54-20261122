@@ -250,6 +250,18 @@ class Library:
             )
             return [decode_row(row) for row in rows]
 
+    @staticmethod
+    def _paper_available(db, card_id, settings):
+        paper = settings["sheet"]["paper"]
+        if not paper.startswith("measured:"):
+            return
+        row = db.execute(
+            "SELECT 1 FROM measurements WHERE card_id=? AND id=? AND kind='density'",
+            (card_id, paper.split(":", 1)[1]),
+        ).fetchone()
+        if row is None:
+            raise Unprocessable("Choose a retained gray-step inspection from this card as its measured paper.")
+
     def create_card(self, title, note="", *, plan=None, synthetic=False):
         identifier = storage_id()
         title = short_text(title, "card title")
@@ -258,6 +270,7 @@ class Library:
         with self.database(write=True) as db:
             if db.execute("SELECT COUNT(*) FROM cards").fetchone()[0] >= MAX_CARDS:
                 raise Capacity("The local library is full. Archive work from a separate library first.")
+            self._paper_available(db, identifier, config)
             db.execute(
                 "INSERT INTO cards(id,title,note,synthetic,config,created) VALUES (?, ?, ?, ?, ?, ?)",
                 (identifier, title, note, int(synthetic), encode_json(config), utc_now()),
@@ -277,6 +290,7 @@ class Library:
         note = short_text(note, "working note", maximum=500, allow_blank=True)
         with self.database(write=True) as db:
             self._version(db, card_id, version)
+            self._paper_available(db, card_id, settings)
             db.execute(
                 "UPDATE cards SET title=?, note=?, config=? WHERE id=?",
                 (title, note, encode_json(settings), card_id),

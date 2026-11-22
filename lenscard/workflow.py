@@ -17,7 +17,9 @@ from .optics import LensGrid
 from .printing import (
     export_media, identify_candidate, inspect_angle, physical_dimensions, proof_inspection, render_print,
 )
-from .tone import SoftOptions, analyze_neutral_noise, response_patches, soft_proof
+from .tone import (
+    MEASURED_PREFIX, SoftOptions, analyze_neutral_noise, measured_paper, paper_menu, response_patches, soft_proof,
+)
 from .transfer import json_bytes, report_csv
 from .visual import png_bytes
 
@@ -73,19 +75,29 @@ class CardJob:
             self._prepared = prepare_registered(self.library, self.views, self.plan.framing)
         return self._prepared
 
+    def selected_paper(self):
+        """Resolve the card's paper selection to a measured model, or None for a built-in stock."""
+        selection = self.plan.sheet.paper
+        if not selection.startswith(MEASURED_PREFIX):
+            return None
+        return measured_paper(self.library.measurement(self.card_id, selection[len(MEASURED_PREFIX):]))
+
     def layout(self):
-        report, images = inspect_framing(self.prepared(), self.plan.sheet, self.plan.framing)
+        paper = self.selected_paper()
+        report, images = inspect_framing(self.prepared(), self.plan.sheet, self.plan.framing,
+                                         paper.white_coded if paper is not None else None)
         return Result({**report, **self.read_job(), "kind": "framing"}, images, report["views"])
 
     def viewing(self, angle):
-        report, image = inspect_angle(self.prepared(), self.plan, angle)
+        report, image = inspect_angle(self.prepared(), self.plan, angle, self.selected_paper())
         return Result({**report, **self.read_job(), "kind": "view-angle"}, {"angle": png_bytes(image)}, report["contributors"])
 
     def preview(self, angle=0):
-        output = render_print(self.prepared(), self.plan)
-        note, images = proof_inspection(self.prepared(), self.plan, output)
+        paper = self.selected_paper()
+        output = render_print(self.prepared(), self.plan, paper)
+        note, images = proof_inspection(self.prepared(), self.plan, output, paper)
         if abs(angle) > 1e-9:
-            detail, shown = inspect_angle(self.prepared(), self.plan, angle)
+            detail, shown = inspect_angle(self.prepared(), self.plan, angle, paper)
             note["preview_angle"] = detail
             images["angles"] = png_bytes(shown)
         images["print-preview"] = output.preview()
@@ -93,14 +105,16 @@ class CardJob:
             **note, **self.read_job(), "kind": "print-preview",
             "preflight": {"file_dimensions": output.metadata["raster_pixel_count"],
                           "mount": self.plan.sheet.mount,
-                          "color_paper": self.plan.sheet.paper},
+                          "color_paper": self.plan.sheet.paper,
+                          "color_paper_label": output.metadata["paper_label"]},
         }, images, note["angular_response"])
 
     def archive(self, title, after_version, displayed):
         self.check_receipt(after_version, displayed)
         prepared = self.prepared()
-        out = render_print(prepared, self.plan)
-        summary, previews = proof_inspection(prepared, self.plan, out)
+        paper = self.selected_paper()
+        out = render_print(prepared, self.plan, paper)
+        summary, previews = proof_inspection(prepared, self.plan, out, paper)
         media, exported = export_media(out, self.plan)
         archive_report = {
             "identity": self.identity,
@@ -162,6 +176,11 @@ class CardJob:
             identifier = enabled[0]["id"]
         return load_sample(self.library, self.card_id, identifier, body.get("region"))
 
+    def _measured_paper(self, options):
+        if options.measured_id is None:
+            return None
+        return measured_paper(self.library.measurement(self.card_id, options.measured_id))
+
     def tool(self, name, values):
         body = object_value(values, "inspection")
         if name == "framing":
@@ -191,7 +210,11 @@ class CardJob:
         elif name == "texture":
             report, image = pattern_report(sample, body.get("direction", "across"))
         elif name == "soft-proof":
-            report, image = soft_proof(sample, SoftOptions.parse(body.get("settings", {}), self.plan.sheet.paper))
+            menu = self.paper_menu()
+            identifiers = [row["selection"][len(MEASURED_PREFIX):] for row in menu["measured"]]
+            options = SoftOptions.parse(body.get("settings", {}), self.plan.sheet.paper, identifiers)
+            report, image = soft_proof(sample, options, self._measured_paper(options))
+            return Result({**report, **self.read_job(), "paper_menu": menu}, image)
         elif name == "density":
             report, image = response_patches(sample, body.get("patches"))
             return Result({**report, **self.read_job()}, image, report["patches"])
@@ -200,6 +223,19 @@ class CardJob:
         else:
             raise Missing("This inspection is not available.")
         return Result({**report, **self.read_job()}, image)
+
+    def paper_menu(self):
+        menu = paper_menu(self.library.measurements(self.card_id))
+        menu["selected"] = self.plan.sheet.paper
+        builtin = {row["selection"]: row["label"] for row in menu["builtin"]}
+        measured = {row["selection"]: row for row in menu["measured"]}
+        if self.plan.sheet.paper in measured:
+            menu["selected_label"] = measured[self.plan.sheet.paper]["label"]
+            menu["selected_measured"] = measured[self.plan.sheet.paper]
+        else:
+            menu["selected_label"] = builtin.get(self.plan.sheet.paper, self.plan.sheet.paper)
+        menu["selected_paper"] = self.selected_paper().report() if self.plan.sheet.paper in measured else None
+        return menu
 
     def measured_optics(self, files, settings, proof_id=None):
         if proof_id:

@@ -207,6 +207,18 @@ class Lens:
         return asdict(self)
 
 
+def paper_selection(value: Any, label: str = "paper tone") -> str:
+    if not isinstance(value, str):
+        raise WorkbenchError(f"{label.capitalize()} must name a built-in stock or a retained measured paper.", field=label)
+    if value in ("white", "warm", "matte"):
+        return value
+    if re.fullmatch(r"measured:[0-9a-f]{32}", value):
+        return value
+    raise WorkbenchError(
+        f"{label.capitalize()} must be one of white, warm, matte or a retained measured paper.", field=label,
+    )
+
+
 @dataclass(frozen=True)
 class Sheet:
     width_mm: float = 54
@@ -224,7 +236,7 @@ class Sheet:
             height_mm=number(obj.get("height_mm", 68), "height in millimetres", 18, 290),
             dpi=integer(obj.get("dpi", 500), "printer dpi", 150, 1200),
             mount=choice(obj.get("mount", "face"), "mount side", ("face", "reverse")),
-            paper=choice(obj.get("paper", "white"), "paper tone", ("white", "warm", "matte")),
+            paper=paper_selection(obj.get("paper", "white")),
         )
         width, height = sheet.size
         if max(width, height) > MAX_DRAW_EDGE or width * height > MAX_PRINT_PIXELS:

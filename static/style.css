@@ -79,6 +79,9 @@ a { color: var(--teal); }
 .results > img, dialog img { width: 100%; height: auto; max-height: 410px; object-fit: contain; background: var(--canvas); }
 .results h3 { margin: 7px 0 2px; font-size: 14px; }
 .readout { max-height: 310px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11px/1.4 var(--mono); color: #b8d1c3; background: #151a20; border-radius: 4px; padding: 10px; }
+.inferred-note { border: 1px solid #825e45; border-left: 3px solid var(--accent); background: #2a2620; border-radius: 4px; padding: 8px 11px; margin: 9px 0; font-size: 13px; }
+.inferred-note ul { margin: 5px 0 0; padding-left: 19px; color: var(--subtext); }
+.inferred-note p { margin: 6px 0 0; }
 details { margin: 8px 0; }
 summary { cursor: pointer; color: var(--teal); font-size: 13px; }
 .records article { padding: 9px 0; border-bottom: 1px solid var(--border); }

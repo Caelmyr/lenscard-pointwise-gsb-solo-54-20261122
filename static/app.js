@@ -8,6 +8,7 @@ const state = {
     library: [], samples: [], tools: {}, card: null, proofs: [], measurements: [], events: [],
     draftPreview: null, retained: null, lastTool: null, reading: null, stage: 'original',
     view: null, point: [0.5, 0.5], tab: 'compose', angle: 0, stageMods: {}, sequence: 0, archive: null,
+    paperMenu: null,
 };
 const api = () => `/api/cards/${state.card.id}`;
 const view = () => state.card?.views.find(row => row.id === state.view);
@@ -18,6 +19,14 @@ const resetResult = () => { state.lastTool = null; state.reading = null; };
 const resetDraft = () => { state.draftPreview = null; state.stageMods = {}; resetResult(); };
 const cardVersion = () => state.card.version;
 const angles = () => state.card.config.lens.latitude;
+const paperRows = (includeMeasured = true) => {
+    const menu = state.paperMenu;
+    const builtin = menu ? menu.builtin.map(row => [row.selection, row.label])
+        : [['white','Bright white'],['warm','Warm'],['matte','Matte']];
+    const measured = includeMeasured ? (menu?.measured || []).map(row => [row.selection, row.label]) : [];
+    return [...builtin, ...measured];
+};
+const paperKind = key => key?.startsWith('measured:') ? 'Measured paper' : 'Built-in paper';
 const simpleFields = (rows) => group(rows.map(([label,name,value,options='step="0.001"']) => field(label,name,value,'number',options)));
 const viewChoices = () => state.card.views.map(v => [v.id, v.title]);
 
@@ -43,6 +52,8 @@ async function openCard(id, {keep = false} = {}) {
     }
     if (!view()) state.view = state.card.views[0]?.id || null;
     if (!keep) resetDraft();
+    try { state.paperMenu = (await ask(`${api()}/paper-menu`)).menu; }
+    catch { state.paperMenu = null; }
     redraw();
 }
 function renderLibrary() {
@@ -95,7 +106,7 @@ function renderComposition() {
             ['Printer DPI','dpi',sheet.dpi,'step="1"'],['Aperture ratio','aperture',sampling.aperture]])}
         ${group([select('View order','order',[['forward','Forward'],['reverse','Reverse']],lens.order),
                   select('Print side','mount',[['face','Observer front'],['reverse','Back mount']],sheet.mount),
-                  select('Paper','paper',[['white','Bright white'],['warm','Warm'],['matte','Matte']],sheet.paper),
+                  select('Paper','paper',paperRows(),sheet.paper),
                   select('Sampling','method',[['solid','Device dot center'],['coverage','Area coverage']],sampling.method)])}
         <h2>Source framing</h2>
         ${group([select('Canvas','frame_mode',[['center','Reference frame'],['shared','Common coverage']],framing.mode),
@@ -119,6 +130,7 @@ function renderPreviewActions(){
         ${readout(r,'Print proof settings')}`;
 }
 function renderInspection() {
+    const menu = state.paperMenu;
     return `<form class="controls" data-form="inspect">
         ${select('Inspection','tool',toolChoices(),state.lastTool?.tool || 'exposure')}
         ${group([select('Original','view',viewChoices(),state.view),
@@ -129,6 +141,8 @@ function renderInspection() {
           ${field('Line start','start','0.04,0.55')}${field('Line end','end','0.96,0.55')}
           ${select('Spectrum direction','direction',[['across','Across'],['down','Down']], 'across')}
           ${select('Paper simulation','soft_method',[['compress','Compress chroma'],['clip','Clip'],['neutral','Neutral']], 'compress')}
+          ${select('Paper stock','soft_paper',paperRows(),menu?.selected || state.card.config.sheet.paper)}
+          ${menu ? `<p class="muted">Card paper: <b>${esc(menu.selected_label)}</b> · ${esc(paperKind(menu.selected))}${menu.selected_measured ? ` · retained ${esc(String(menu.selected_measured.created).slice(0, 10))}` : ''}</p>` : ''}
           ${textarea('Density patches or lens marks (JSON)','rows','[]',7600)}
         </div></details><div class="row">${submit('Run inspection')}</div>
         </form>${renderReading()}`;
@@ -139,11 +153,21 @@ function renderReading() {
     const report = data.report;
     const pictures = Object.entries(data.images || {});
     const title = label(report.kind || state.lastTool?.tool || 'inspection');
+    const measured = report.paper_kind === 'measured' ? report.paper_source : null;
+    const uncertain = measured?.steps?.filter(step => step.status === 'inferred') || [];
+    const faulted = (report.patches || []).filter(step => step.status === 'inferred');
     return `<section class="results"><h2>${esc(title)}</h2>
+       ${report.paper_kind ? `<p class="stamp">Using ${esc(report.paper_kind === 'measured' ? 'measured paper' : 'built-in paper')}: <b>${esc(report.paper)}</b></p>` : ''}
        ${pictures.length ? img(pictures[0][1], titleWords(pictures[0][0])) : ''}
        <div class="row">${pictures.map(([name])=>button(titleWords(name),'result-view',name)).join('')}
        ${state.lastTool ? button('Keep inspection','keep-reading') : ''}
        ${data.pdf ? link('Download actual-size PDF',data.pdf,'lenscard-target.pdf') : ''}${data.csv ? link('Download measurements CSV',data.csv,'lenscard-readings.csv') : ''}</div>
+       ${measured?.warning?.length ? `<div class="inferred-note"><b>Partly inferred response</b><ul>${measured.warning.map(text => `<li>${esc(text)}</li>`).join('')}</ul>
+         ${uncertain.length ? `<p>Steps marked uncertain: ${uncertain.map(step => `#${step.patch} (${format(step.nominal, 3)})`).join(', ')}</p>` : ''}</div>` : ''}
+       ${faulted.length ? `<p class="muted">Marked for inference: ${faulted.map(step =>
+           `#${step.patch} (${format(step.target, 3)})`).join(', ')}. Keep this inspection, then choose it under Paper stock to get an ordered ramp.</p>` : ''}
+       ${report.near_white_separation ? `<p class="muted">Near-white steps: ${report.near_white_separation.map(step =>
+           `#${step.patch} ${format(step.printed_luminance, 3)}${step.separation_from_previous != null ? ` (+${format(step.separation_from_previous, 3)})` : ''}${step.status === 'inferred' ? ' (inferred)' : ''}`).join(' · ')}</p>` : ''}
        ${readout(report)}
        </section>`;
 }
@@ -197,7 +221,7 @@ function bodyForTool(tool, v) {
     const body = {view:v.view,other:v.other,region:bounds,divider:Number(v.divider),
                   radius:Number(v.radius),start:numbers(v.start),end:numbers(v.end),point:state.point,
                   direction:v.direction,angle:state.angle};
-    if (tool === 'soft-proof') body.settings = {method:v.soft_method};
+    if (tool === 'soft-proof') body.settings = {method:v.soft_method,paper:v.soft_paper};
     if (tool === 'density') body.patches = JSON.parse(v.rows || '[]');
     if (tool === 'lens-fit') body.ticks = JSON.parse(v.rows || '[]');
     return body;
@@ -250,7 +274,17 @@ const actions = {
         const pictures=Object.keys(m.assets).filter(key => m.assets[key].mime==='image/png').map(key =>
             img(`${api()}/measurements/${id}/asset/${key}`,titleWords(key))).join('');
         const csv=m.assets.csv?link('Download measurement CSV',`${api()}/measurements/${id}/asset/csv?download=1`):'';
-        modal(m.title,pictures+csv+readout(m.report));
+        const detail=m.report?.kind==='paper-density-readback'?button('Preview this paper','preview-measured-paper',id,'orange'):'';
+        modal(m.title,pictures+`<div class="row">${csv}${detail}</div>`+readout(m.report));
+    },
+    'preview-measured-paper': async id => {
+        const selection=`measured:${id}`;
+        const result=await ask(`${api()}/inspect/soft-proof`,'POST',{view:state.view,region:[0,0,1,1],
+            settings:{method:'compress',paper:selection}});
+        state.lastTool={tool:'soft-proof',payload:{view:state.view,region:[0,0,1,1],
+            settings:{method:'compress',paper:selection}}};
+        closeDialog();displayReading(result);
+        notice('Showing the measured paper response. Change Paper stock to compare a built-in stock.');
     },
     'result-view': key => {state.stageMods.inspect=state.reading.images[key];state.stage='inspect';redraw();},
 };

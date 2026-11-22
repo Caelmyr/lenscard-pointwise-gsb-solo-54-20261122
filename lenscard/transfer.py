@@ -250,6 +250,9 @@ def preview_view_upload(payload):
     try:
         data = json.loads(assets["views.json"])
         plan = Plan.parse(data["plan"]).public()
+        if plan["sheet"]["paper"].startswith("measured:"):
+            # A measured paper lives on its own card; a portable view set cannot carry its evidence.
+            plan["sheet"]["paper"] = "white"
         entries = data["entries"]
         if not isinstance(entries, list) or len(entries) > MAX_VIEWS:
             raise Unprocessable("The package has too many views.")

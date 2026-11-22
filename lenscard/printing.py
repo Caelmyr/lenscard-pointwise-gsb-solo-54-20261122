@@ -16,6 +16,7 @@ from .optics import (
     response_report, solid_slot_coverage,
 )
 from .storage import digest_object
+from .tone import PAPER_SIMULATIONS
 from .visual import chart_png, png_bytes, scalar_palette
 
 
@@ -61,7 +62,7 @@ def identify_candidate(card, records, plan: Plan):
     return digest_object(identity), identity
 
 
-def render_print(registered, plan):
+def render_print(registered, plan, paper=None):
     count = len(registered.views)
     if count < 2:
         raise Unprocessable("Enable at least two views to build a proof.")
@@ -75,7 +76,8 @@ def render_print(registered, plan):
     weights_by_view = []
     method = solid_slot_coverage if plan.sampling.method == "solid" else exact_slot_coverage
     reverse = plan.sheet.mount == "reverse"
-    fitted_views = fit_views(registered, width, height, plan.sheet, plan.framing.cover)
+    white = paper.white_coded if paper is not None else None
+    fitted_views = fit_views(registered, width, height, plan.sheet, plan.framing.cover, white)
     for index, image in enumerate(fitted_views):
         slot = physical_slot(index, count, plan.lens.order)
         source = image.linear[:, ::-1] if reverse else image.linear
@@ -97,6 +99,8 @@ def render_print(registered, plan):
         "grid": grid.public(),
         "mount": plan.sheet.mount,
         "paper": plan.sheet.paper,
+        "paper_label": paper.label if paper is not None
+        else PAPER_SIMULATIONS[plan.sheet.paper].name if plan.sheet.paper in PAPER_SIMULATIONS else plan.sheet.paper,
         "requested_mm": [plan.sheet.width_mm, plan.sheet.height_mm],
         "encoded_raster_mm": [round(width * grid.step, 5), round(height * grid.step, 5)],
         "working_image_size": [width_composite, height_composite],
@@ -110,7 +114,7 @@ def render_print(registered, plan):
     return PrintOutput(plate, display, seen, grid, metadata)
 
 
-def inspect_angle(registered, plan, angle):
+def inspect_angle(registered, plan, angle, paper=None):
     width, height = working_preview_sizes(plan.sheet, 800)
     true_width, true_height = plan.sheet.size
     grid = LensGrid(plan.lens, plan.sheet.dpi, true_width, true_height)
@@ -118,7 +122,8 @@ def inspect_angle(registered, plan, angle):
     weights, phase = angular_response(grid, angle, count, plan.sampling)
     linear = np.zeros((height, width, 3), dtype=np.float32)
     visible = np.zeros((height, width), dtype=np.float32)
-    for index, view in enumerate(fit_views(registered, width, height, plan.sheet, plan.framing.cover)):
+    white = paper.white_coded if paper is not None else None
+    for index, view in enumerate(fit_views(registered, width, height, plan.sheet, plan.framing.cover, white)):
         linear += view.linear * weights[index]
         visible += view.support * weights[index]
     photo = Image.fromarray(linear_to_srgb(linear))
@@ -144,14 +149,14 @@ def coverage_preview(grid, count, side, width=760, height=350):
     return png_bytes(Image.fromarray(VIEW_PALETTE[indices])), [int(cols[0]), int(rows[0]), int(cols[-1] + 1), int(rows[-1] + 1)]
 
 
-def proof_inspection(registered, plan, output):
+def proof_inspection(registered, plan, output, paper=None):
     angles = output.grid.screen_angles()
     response = response_report(output.grid, angles, [item.record for item in registered.views], plan.sampling)
     x = np.asarray([row["angle_deg"] for row in response], dtype=float)
     y = np.asarray([row["mixed_fraction"] for row in response], dtype=float)
     chart = chart_png([("Mixed angular fraction", x, y)], x_label="Observer angle (degrees)", y_label="Modelled leakage")
     coverage, roi = coverage_preview(output.grid, len(registered.views), plan.sheet.mount)
-    angle, picture = inspect_angle(registered, plan, 0)
+    angle, picture = inspect_angle(registered, plan, 0, paper)
     return {
         "bands": output.metadata,
         "quanta": print_quanta(output.grid, len(registered.views), plan.sampling, plan.sheet.mount),

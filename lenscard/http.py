@@ -325,6 +325,10 @@ def register_targets(app, library, work):
     def measurement_detail(card_id, key):
         return {"measurement": library.measurement(card_id, key)}
 
+    @app.get("/api/cards/<card_id>/paper-menu")
+    def paper_choices(card_id):
+        return {"menu": CardJob(library, card_id).paper_menu()}
+
     @app.get("/api/cards/<card_id>/measurements/<key>/asset/<media>")
     def measurement_file(card_id, key, media):
         return _saved_media(library, library.measurement(card_id, key), media)

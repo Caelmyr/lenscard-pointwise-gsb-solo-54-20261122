@@ -95,12 +95,15 @@ def prepare_registered(library, records, settings: Framing):
     return Registered(aligned, bound, size, overlap_summary(mask, bound), picked["id"])
 
 
-def paper_rgb(sheet: Sheet):
-    return np.asarray(PAPERS[sheet.paper], np.uint8)
+def paper_rgb(sheet: Sheet, white=None):
+    if white is not None:
+        return np.clip(np.rint(np.asarray(white[:3]) * 255), 0, 255).astype(np.uint8)
+    key = sheet.paper if sheet.paper in PAPERS else "white"
+    return np.asarray(PAPERS[key], np.uint8)
 
 
-def paper_linear(sheet: Sheet):
-    return srgb_to_linear(paper_rgb(sheet).astype(np.float32) / 255)
+def paper_linear(sheet: Sheet, white=None):
+    return srgb_to_linear(paper_rgb(sheet, white).astype(np.float32) / 255)
 
 
 def framing_geometry(width, height, target_width, target_height, cover):
@@ -154,9 +157,9 @@ def _view_for_geometry(view, geometry, target_width, target_height, paper):
     return visible, support
 
 
-def fit_views(registered, width, height, sheet, cover):
+def fit_views(registered, width, height, sheet, cover, white=None):
     geometry = framing_geometry(registered.bound.width, registered.bound.height, width, height, cover)
-    base = paper_linear(sheet)
+    base = paper_linear(sheet, white)
     for view in registered.views:
         cropped = PreparedView(view.record, registered.bound.slice(view.linear), registered.bound.slice(view.support), view.correction)
         linear, support = _view_for_geometry(cropped, geometry, width, height, base)
@@ -168,9 +171,9 @@ def working_preview_sizes(sheet, max_edge):
     return fit_size((width, height), max_edge)
 
 
-def inspect_framing(registered, sheet, framing):
+def inspect_framing(registered, sheet, framing, white=None):
     width, height = working_preview_sizes(sheet, 740)
-    panes = list(fit_views(registered, width, height, sheet, framing.cover))
+    panes = list(fit_views(registered, width, height, sheet, framing.cover, white))
     index = next(i for i, frame in enumerate(panes) if frame.record["id"] == registered.reference)
     main = panes[index]
     support = np.sum([p.support for p in panes], axis=0)

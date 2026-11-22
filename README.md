@@ -25,6 +25,7 @@ For a native start, install the locked dependencies in a Python 3.11 virtual env
 | Texture and grain | **Texture frequency** or **Approximate grain** helps distinguish recurring patterns and quiet-area variation. |
 | Registration and comparison | **Shared framing** reports aligned coverage. **Registered view comparison** presents image divider and signed differences in comparable locations. |
 | Stock simulation | **Paper simulation** compares source and approximate soft-proof appearance. **Density step response** reads explicitly marked patches. |
+| Measured paper | Keep a marked gray-wedge inspection, then choose it under **Paper** or **Paper stock** to use the measured gray-to-white response on the print preview. Uncertain steps are inferred from measured neighbours and marked in the report. |
 | Pitch fitting | **Pitch target** builds a true-size pattern. **Fit marked lens lines** fits one global physical grid from indexed print locations and reports residuals. |
 | Direct optical isolation | **View isolation target** is printable. **Measure angle photographs** compares each intended band to neighbouring bands using local white and dark reference patches. |
 | Readback geometry | **Rectify camera photograph** uses the four marked corners of the paper to produce a normalized copy. |
