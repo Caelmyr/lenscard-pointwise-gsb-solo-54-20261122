@@ -15,7 +15,8 @@ from .models import (
 from .opticaltest import measured_angle_set, render_angle_target
 from .optics import LensGrid
 from .printing import (
-    export_media, identify_candidate, inspect_angle, physical_dimensions, proof_inspection, render_print,
+    caption_summary, export_media, identify_candidate, inspect_angle, physical_dimensions,
+    proof_inspection, render_print,
 )
 from .tone import SoftOptions, analyze_neutral_noise, response_patches, soft_proof
 from .transfer import json_bytes, report_csv
@@ -81,6 +82,12 @@ class CardJob:
         report, image = inspect_angle(self.prepared(), self.plan, angle)
         return Result({**report, **self.read_job(), "kind": "view-angle"}, {"angle": png_bytes(image)}, report["contributors"])
 
+    def caption_preview(self):
+        """Dry run of the shared flip-caption area against the current plan."""
+        prepared = self.prepared()
+        summary = caption_summary(prepared, self.plan)
+        return Result({**summary, **self.read_job(), "kind": "flip-caption-preview"}, {})
+
     def preview(self, angle=0):
         output = render_print(self.prepared(), self.plan)
         note, images = proof_inspection(self.prepared(), self.plan, output)
@@ -89,8 +96,11 @@ class CardJob:
             note["preview_angle"] = detail
             images["angles"] = png_bytes(shown)
         images["print-preview"] = output.preview()
+        captions = note["bands"].get("flip_captions", {})
         return Result({
             **note, **self.read_job(), "kind": "print-preview",
+            "flip_captions": captions,
+            "caption_warning": captions.get("warning") or captions.get("area_warning"),
             "preflight": {"file_dimensions": output.metadata["raster_pixel_count"],
                           "mount": self.plan.sheet.mount,
                           "color_paper": self.plan.sheet.paper},
@@ -107,11 +117,13 @@ class CardJob:
             "summary": summary,
             "outputs": exported,
             "archived_snapshot": self.read_job(),
+            "flip_captions": summary["bands"].get("flip_captions"),
             "projection_notes": {
                 "view_order": self.plan.lens.order,
                 "orientation": self.plan.sheet.mount,
                 "framing": self.plan.framing.public(),
                 "source_count": len(prepared.views),
+                "captions": "Derived artwork only; original captures are unchanged.",
                 "report_owner": "This record is rendered from the listed draft and originals.",
             },
         }

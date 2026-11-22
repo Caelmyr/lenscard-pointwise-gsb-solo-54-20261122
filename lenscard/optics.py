@@ -112,16 +112,25 @@ def _aperture_window(grid, phase, count, sampling):
     return left, right
 
 
-def angular_response(grid, angle, count, sampling: Sampling):
+def physical_slot_weights(grid, angle, count, sampling: Sampling):
+    """Fraction of the finite observation window landing in each physical lens slot."""
     phase = observation_phase(grid, angle)
     left, right = _aperture_window(grid, phase, count, sampling)
-    response = np.asarray([
+    return np.asarray([
         float(overlap_length(left, right, slot / count, (slot + 1) / count) / (right - left))
         for slot in range(count)
     ])
-    if grid.lens.order == "reverse":
-        response = response[::-1]
-    return response, [left, right]
+
+
+def slot_weights(grid, angle, count, sampling: Sampling):
+    """Slot weights in view order, matching the registered views passed in."""
+    response = physical_slot_weights(grid, angle, count, sampling)
+    return response[::-1] if grid.lens.order == "reverse" else response
+
+
+def angular_response(grid, angle, count, sampling: Sampling):
+    left, right = _aperture_window(grid, observation_phase(grid, angle), count, sampling)
+    return slot_weights(grid, angle, count, sampling), [left, right]
 
 
 def response_report(grid, angles, records, sampling):

@@ -328,22 +328,87 @@ class Sampling:
         )
 
 
+DEFAULT_CAPTION_REGION = (0.08, 0.82, 0.92, 0.95)
+
+
+@dataclass(frozen=True)
+class CaptionMessage:
+    """One of the two flip messages, with the angle where it must read clearly."""
+    text: str = ""
+    angle: float = 0.0
+
+    @classmethod
+    def parse(cls, data, label, *, required=False):
+        obj = object_value(data, label)
+        validate_keys(obj, {"text", "angle"}, label)
+        text = short_text(
+            obj.get("text", ""), f"{label} text",
+            maximum=140, allow_blank=not required,
+        )
+        if required and text.count("\n") > 3:
+            raise WorkbenchError(f"{label.capitalize()} must use at most four lines.", field=label)
+        return cls(text, number(obj.get("angle", 0), f"{label} angle", -85, 85))
+
+    def public(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Captions:
+    """Two texts sharing one blank paper area, interleaved into separate lens slots."""
+    enabled: bool = False
+    region: Region = field(default_factory=lambda: Region(*DEFAULT_CAPTION_REGION))
+    left: CaptionMessage = field(default_factory=CaptionMessage)
+    right: CaptionMessage = field(default_factory=CaptionMessage)
+    size_mm: float = 0.0
+
+    @classmethod
+    def parse(cls, data):
+        obj = object_value(data, "captions")
+        validate_keys(obj, {"enabled", "region", "left", "right", "size_mm"}, "captions")
+        enabled = flag(obj.get("enabled", False), "flip captions")
+        captions = cls(
+            enabled=enabled,
+            region=Region.parse(obj.get("region", list(DEFAULT_CAPTION_REGION))),
+            left=CaptionMessage.parse(obj.get("left", {}), "left caption", required=enabled),
+            right=CaptionMessage.parse(obj.get("right", {}), "right caption", required=enabled),
+            size_mm=number(obj.get("size_mm", 0), "caption type size in millimetres", 0, 20),
+        )
+        if enabled and captions.left.angle >= captions.right.angle:
+            raise WorkbenchError(
+                "The left caption angle must be lower than the right caption angle.",
+                field="captions",
+            )
+        return captions
+
+    def public(self):
+        return {
+            "enabled": self.enabled,
+            "region": self.region.public(),
+            "left": self.left.public(),
+            "right": self.right.public(),
+            "size_mm": self.size_mm,
+        }
+
+
 @dataclass(frozen=True)
 class Plan:
     lens: Lens = field(default_factory=Lens)
     sheet: Sheet = field(default_factory=Sheet)
     framing: Framing = field(default_factory=Framing)
     sampling: Sampling = field(default_factory=Sampling)
+    captions: Captions = field(default_factory=Captions)
 
     @classmethod
     def parse(cls, data):
         obj = object_value(data, "card settings")
-        validate_keys(obj, {"lens", "sheet", "framing", "sampling"}, "card settings")
+        validate_keys(obj, {"lens", "sheet", "framing", "sampling", "captions"}, "card settings")
         return cls(
             Lens.parse(obj.get("lens", {})),
             Sheet.parse(obj.get("sheet", {})),
             Framing.parse(obj.get("framing", {})),
             Sampling.parse(obj.get("sampling", {})),
+            Captions.parse(obj.get("captions", {})),
         )
 
     def check_sampling(self, views):
@@ -355,7 +420,10 @@ class Plan:
             )
 
     def public(self):
-        return {**asdict(self), "framing": self.framing.public()}
+        return {
+            **asdict(self), "framing": self.framing.public(),
+            "captions": self.captions.public(),
+        }
 
 
 def ordered_views(views, *, minimum=2):

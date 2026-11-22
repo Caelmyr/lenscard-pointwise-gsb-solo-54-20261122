@@ -12,7 +12,8 @@ For a native start, install the locked dependencies in a Python 3.11 virtual env
 
 1. In the library, open **Harbour at blue hour** for a three-angle example or **Terrace in the rain** for a four-angle example. These are marked synthetic illustrations. To use your own photographs, create a card and import each view with its camera angle. PNG, JPEG, single-page TIFF and WebP are supported. Active originals must share the same oriented dimensions.
 2. In **Compose**, enter the lens pitch, phase, drift, viewing cone, paper dimensions and printer DPI. Change referencing, common coverage and crop independently of the original images. Save draft settings, then build a print preview. Use **Observed angle** to test the synthetic angular model and **Band map** to inspect native view occupancy. Back-mounted print geometry is reflected as part of the export.
-3. Keep the displayed proof for approval, then explicitly approve it from **Records**. Download the actual-size PDF, original device PNG or evidence ZIP from **Approved print**. Working edits leave the approved print pinned to the previous snapshot. Print at actual size with fit-to-page disabled.
+3. For two flip messages on one blank area, set **Flip captions**: both texts, the read angle for each, and the shared blank area. **Check flip captions** previews the two lens bands, the angle span each message reads over, the quiet span between them and any one-band retreat each side could take. Nothing is moved automatically, and the captions are drawn only in the derived print raster and its previews, never into the camera originals.
+4. Keep the displayed proof for approval, then explicitly approve it from **Records**. Download the actual-size PDF, original device PNG or evidence ZIP from **Approved print**. Working edits leave the approved print pinned to the previous snapshot. Print at actual size with fit-to-page disabled.
 
 ## Check the inputs and printed card
 
@@ -27,6 +28,7 @@ For a native start, install the locked dependencies in a Python 3.11 virtual env
 | Stock simulation | **Paper simulation** compares source and approximate soft-proof appearance. **Density step response** reads explicitly marked patches. |
 | Pitch fitting | **Pitch target** builds a true-size pattern. **Fit marked lens lines** fits one global physical grid from indexed print locations and reports residuals. |
 | Direct optical isolation | **View isolation target** is printable. **Measure angle photographs** compares each intended band to neighbouring bands using local white and dark reference patches. |
+| Flip caption check | **Check flip captions** reports the read span of each message, the quiet span between them, the largest simultaneous mix and a one-band retreat per side. **Observed angle** shows which message is visible at the slider angle. |
 | Readback geometry | **Rectify camera photograph** uses the four marked corners of the paper to produce a normalized copy. |
 | Camera operating checklist | **Plan angle stops** prepares a PDF and CSV of predicted viewing intervals. **Review camera timing** compares captured times to the planned holds. |
 | Physical print verification | **Inspect device pixels**, **Physical ruler proof**, **Check measured print size**, and **Measure scanned stripe pitch** read retained sampling or physical measurements. |

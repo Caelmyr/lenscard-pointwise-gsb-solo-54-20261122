@@ -15,6 +15,7 @@ from .optics import (
     LensGrid, angular_domains, angular_response, exact_slot_coverage, physical_slot, print_quanta,
     response_report, solid_slot_coverage,
 )
+from . import captions as caption_ink
 from .storage import digest_object
 from .visual import chart_png, png_bytes, scalar_palette
 
@@ -61,6 +62,64 @@ def identify_candidate(card, records, plan: Plan):
     return digest_object(identity), identity
 
 
+def caption_details(registered, plan, grid, layout, report, sample=None):
+    """Shared caption summary fields for preview, proof and archive records."""
+    if sample is None:
+        sample = caption_ink.lens_sampling(layout, grid) if layout is not None else {"sufficient": False}
+    renderable = layout is not None and report["rendered"]
+    approvable = renderable and report["status"] == "separated"
+    content = caption_ink.region_content(registered, plan, plan.captions.region) \
+        if plan.captions.enabled else None
+    if not plan.captions.enabled:
+        capacity_warning = boundary_warning = None
+    else:
+        capacity_warning = None if layout is not None and layout.renderable else \
+            "The caption text does not fit the shared blank area; enlarge the area or shorten the text."
+        if report["rendered"]:
+            boundary_warning = None if approvable else (
+                "The two captions still share an angle. Retreat one side by a band; "
+                "nothing is moved automatically."
+            )
+        elif report["status"] == "outside_cone":
+            boundary_warning = "A caption target angle lies outside the viewing cone; move it inside the cone."
+        else:
+            boundary_warning = None
+    legibility_warning = None
+    if plan.captions.enabled and renderable and not sample["sufficient"]:
+        legibility_warning = (
+            "Caption strokes are narrower than one lens pitch and will break up after slicing; "
+            "raise the type size or use a coarser lens."
+        )
+    return {
+        **report,
+        "region_mm": caption_ink.region_mm(plan.captions.region, plan.sheet),
+        "legibility": sample,
+        "legibility_warning": legibility_warning,
+        "region_content": content,
+        "render_allowed": renderable,
+        "approval_allowed": approvable,
+        "boundary_warning": boundary_warning,
+        "capacity_warning": capacity_warning,
+        "warning": capacity_warning or boundary_warning or legibility_warning,
+        "area_warning": content.get("warning") if content else None,
+        "captions_are_derived_artwork": True,
+        "originals_unchanged": True,
+    }
+
+
+def caption_summary(registered, plan):
+    """Print-scale caption layout, bands and angular reach for one plan."""
+    count = len(registered.views)
+    width, height = plan.sheet.size
+    grid = LensGrid(plan.lens, plan.sheet.dpi, width, height)
+    layout = caption_ink.build_layout(plan.captions, width, height, plan.sheet.dpi / 25.4)
+    report = caption_ink.analyse(grid, plan.captions, count, plan.sampling, layout)
+    if layout is not None and report["rendered"]:
+        layout.left_band = report["bands"]["left"]
+        layout.right_band = report["bands"]["right"]
+    return caption_details(registered, plan, grid, layout, report)
+
+
 def render_print(registered, plan):
     count = len(registered.views)
     if count < 2:
@@ -89,6 +148,17 @@ def render_print(registered, plan):
             total += float(np.sum(weights, dtype=np.float64))
         weights_by_view.append(round(total / (width * height), 8))
         support_counts.append(image.public())
+    layout = caption_ink.build_layout(plan.captions, width, height, plan.sheet.dpi / 25.4)
+    caption_report = caption_ink.analyse(grid, plan.captions, count, plan.sampling, layout)
+    caption_sample = caption_ink.lens_sampling(layout, grid) if layout is not None else {"sufficient": False}
+    # Draw the requested text whenever it physically fits and lands on its own band.
+    # Marginal slicing legibility is reported, never used to silently drop artwork.
+    draw_captions = layout is not None and caption_report["rendered"]
+    if draw_captions:
+        layout.left_band = caption_report["bands"]["left"]
+        layout.right_band = caption_report["bands"]["right"]
+        caption_ink.composite(output, layout, caption_ink.print_alpha(grid, layout, count),
+                              mirror=reverse)
     plate = linear_to_srgb(output)
     # Keep full-resolution print bytes. The overview is filtered only for display.
     display = np.asarray(Image.fromarray(plate).resize((width_composite, height_composite), Image.Resampling.LANCZOS))
@@ -106,6 +176,7 @@ def render_print(registered, plan):
         "supported_print_fraction": round(float(seen.mean()), 6),
         "views": support_counts,
         "angular_windows": angular_domains(grid, [view.record for view in registered.views]),
+        "flip_captions": caption_details(registered, plan, grid, layout, caption_report, caption_sample),
     }
     return PrintOutput(plate, display, seen, grid, metadata)
 
@@ -114,6 +185,7 @@ def inspect_angle(registered, plan, angle):
     width, height = working_preview_sizes(plan.sheet, 800)
     true_width, true_height = plan.sheet.size
     grid = LensGrid(plan.lens, plan.sheet.dpi, true_width, true_height)
+    preview_grid = LensGrid(plan.lens, width / plan.sheet.width_mm * 25.4, width, height)
     count = len(registered.views)
     weights, phase = angular_response(grid, angle, count, plan.sampling)
     linear = np.zeros((height, width, 3), dtype=np.float32)
@@ -121,15 +193,35 @@ def inspect_angle(registered, plan, angle):
     for index, view in enumerate(fit_views(registered, width, height, plan.sheet, plan.framing.cover)):
         linear += view.linear * weights[index]
         visible += view.support * weights[index]
+    layout = caption_ink.build_layout(
+        plan.captions, width, height, width / plan.sheet.width_mm)
+    caption_report = caption_ink.analyse(grid, plan.captions, count, plan.sampling, layout)
+    if layout is not None and caption_report["rendered"]:
+        layout.left_band = caption_report["bands"]["left"]
+        layout.right_band = caption_report["bands"]["right"]
+        mask = caption_ink.observed_alpha(preview_grid, layout, angle, count, plan.sampling)
+        caption_ink.composite(linear, layout, mask)
     photo = Image.fromarray(linear_to_srgb(linear))
     model = response_report(grid, [angle], [view.record for view in registered.views], plan.sampling)[0]
-    return {
+    details = {
         **model,
         "phase": phase,
         "pixels": [width, height],
         "visible_fraction": round(float(visible.mean()), 6),
         "proof_kind": "predicted from a global lens grid and a finite observation window",
-    }, photo
+    }
+    if plan.captions.enabled:
+        sample = caption_ink.lens_sampling(layout, grid) if layout is not None else {"sufficient": False}
+        details["flip_captions"] = {
+            "messages": caption_ink.visible_messages(angle, grid, count, plan.sampling, layout)
+            if layout is not None and caption_report["rendered"] else None,
+            "status": caption_report["status"],
+            "message": caption_report["message"],
+            "legibility": sample,
+            "render_allowed": bool(caption_report["rendered"]),
+            "layout": layout.public() if layout else None,
+        }
+    return details, photo
 
 
 def coverage_preview(grid, count, side, width=760, height=350):

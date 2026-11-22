@@ -8,6 +8,7 @@ const state = {
     library: [], samples: [], tools: {}, card: null, proofs: [], measurements: [], events: [],
     draftPreview: null, retained: null, lastTool: null, reading: null, stage: 'original',
     view: null, point: [0.5, 0.5], tab: 'compose', angle: 0, stageMods: {}, sequence: 0, archive: null,
+    captionCheck: null, captionVisibility: null,
 };
 const api = () => `/api/cards/${state.card.id}`;
 const view = () => state.card?.views.find(row => row.id === state.view);
@@ -15,7 +16,7 @@ const label = key => state.tools[key] || titleWords(key);
 const activeProof = () => state.retained || state.proofs.find(item => item.id === state.card.approval?.proof_id) || state.proofs[0];
 const toolChoices = () => optionRows(state.tools);
 const resetResult = () => { state.lastTool = null; state.reading = null; };
-const resetDraft = () => { state.draftPreview = null; state.stageMods = {}; resetResult(); };
+const resetDraft = () => { state.draftPreview = null; state.stageMods = {}; state.captionCheck = null; state.captionVisibility = null; resetResult(); };
 const cardVersion = () => state.card.version;
 const angles = () => state.card.config.lens.latitude;
 const simpleFields = (rows) => group(rows.map(([label,name,value,options='step="0.001"']) => field(label,name,value,'number',options)));
@@ -80,11 +81,15 @@ function renderStage() {
         ${source ? `<div class="stage-canvas">${img(source, mode, 'stage-image')}${state.stage === 'original' ?
           `<span class="probe-cross" style="left:${state.point[0]*100}%;top:${state.point[1]*100}%" aria-hidden="true"></span>` : ''}</div>` :
           '<div class="empty">Select an original or build a card preview.</div>'}
+        ${state.stage === 'angular' && state.captionCheck ? captionLine(state.captionCheck) : ''}
+        ${state.stage === 'angular' && state.captionVisibility ? `<div class="caption-note">
+          <b>At ${format(state.angle)}°</b><span>Left ${format(state.captionVisibility.left_fraction*100)}% visible · right ${format(state.captionVisibility.right_fraction*100)}% visible${state.captionVisibility.both_visible ? ' · both show at once' : ''}</span></div>` : ''}
         <div class="stage-control"><label>Viewing angle<input id="angle-slider" type="range" min="${-angles()}" max="${angles()}" step=".2" value="${state.angle}"><output id="angle-value">${format(state.angle)}°</output></label></div>
     </section>`;
 }
 function renderComposition() {
     const {lens, sheet, framing, sampling} = state.card.config;
+    const captions = state.card.config.captions || {enabled:false, region:[.08,.82,.92,.95], left:{text:'',angle:-18}, right:{text:'',angle:18}, size_mm:0};
     return `<form class="controls" data-form="settings">
         ${field('Card title','title',state.card.title)}
         <h2>Lens and stock</h2>
@@ -103,9 +108,49 @@ function renderComposition() {
                   select('Reference original','reference',[['','Closest to center'],...viewChoices()],framing.reference||''),
                   check('Align global translation and scale','fit_motion',framing.fit_motion)])}
         ${field('Frame bounds (normalized)','frame',framing.frame.join(', '))}
+        ${renderCaptionFields(captions)}
         ${textarea('Working note','note',state.card.note)}
-        <div class="row">${submit('Save draft')} ${button('Build print preview','preview','','orange')}</div>
-    </form>${renderPreviewActions()}`;
+        <div class="row">${submit('Save draft')} ${button('Build print preview','preview','','orange')}
+        ${captions.enabled ? button('Check flip captions','caption-check') : ''}</div>
+    </form>${renderPreviewActions()}${renderCaptionReport()}`;
+}
+function renderCaptionFields(c) {
+    return `<h2>Flip captions</h2>
+      <p class="muted">Both messages share one blank paper area and print into different lens bands. Nothing is written into the originals.</p>
+      ${group([check('Use flip captions','captions_enabled',c.enabled),
+               field('Caption area (normalized)','captions_region',c.region.join(', '))])}
+      ${textarea('Left message','caption_left',c.left.text,140)}
+      ${field('Left message read angle (°)','caption_left_angle',c.left.angle,'number','step=".1"')}
+      ${textarea('Right message','caption_right',c.right.text,140)}
+      ${field('Right message read angle (°)','caption_right_angle',c.right.angle,'number','step=".1"')}
+      ${field('Type size (mm, 0 = fit the area)','caption_size',c.size_mm,'number','step=".05"')}`;
+}
+function renderCaptionReport() {
+    const r = state.captionCheck;
+    if (!r) return '';
+    const fmt = value => Array.isArray(value) ? `${format(value[0])}° … ${format(value[1])}°` : '—';
+    return `<hr><h2>Flip caption check</h2>
+      ${metrics([['Status', titleWords(r.status)],
+        ['Left read range', fmt(r.left?.readable_window_deg)],
+        ['Right read range', fmt(r.right?.readable_window_deg)],
+        ['Blank between', fmt(r.blank_angular_span_deg)],
+        ['Both visible', format((r.max_simultaneous_fraction ?? 0) * 100) + '%']])}
+      <p class="${r.status === 'separated' ? 'muted' : 'warn'}">${esc(r.message || '')}</p>
+      ${r.retreat_options?.length ? `<details><summary>Retreat choices (not applied)</summary>
+        <ul class="plain">${r.retreat_options.map(o =>
+          `<li>${esc(o.side)}: ${esc(o.message)}${o.feasible ? ` → band ${o.new_band}, target ${format(o.suggested_target_angle_deg)}°` : ''}</li>`).join('')}</ul></details>` : ''}
+      ${r.legibility ? `<p class="${r.legibility.sufficient ? 'muted' : 'warn'}">${format(r.legibility.median_character_lenses)} lens widths per character, ${format(r.legibility.median_stroke_lenses)} per stroke.</p>` : ''}
+      ${r.capacity_warning ? `<p class="warn">${esc(r.capacity_warning)}</p>` : ''}
+      ${r.boundary_warning ? `<p class="warn">${esc(r.boundary_warning)}</p>` : ''}
+      ${r.legibility_warning ? `<p class="warn">${esc(r.legibility_warning)}</p>` : ''}
+      ${r.area_warning ? `<p class="warn">${esc(r.area_warning)}</p>` : ''}
+      ${readout(r)}`;
+}
+function captionLine(r) {
+    const fmt = value => Array.isArray(value) ? `${format(value[0])}°…${format(value[1])}°` : '—';
+    return `<div class="caption-note ${r.status === 'separated' ? '' : 'warn'}">
+      <b>Flip captions · ${esc(titleWords(r.status))}</b>
+      <span>Left shows ${fmt(r.left?.visible_window_deg)} (clear ${fmt(r.left?.readable_window_deg)}) · right shows ${fmt(r.right?.visible_window_deg)} (clear ${fmt(r.right?.readable_window_deg)}) · quiet span ${fmt(r.blank_angular_span_deg)}</span></div>`;
 }
 function renderPreviewActions(){
     const result = state.draftPreview;
@@ -116,6 +161,8 @@ function renderPreviewActions(){
         ['Supported raster', format(r.bands.supported_print_fraction*100) + '%'],
         ['Physical card', r.bands.requested_mm.join(' × ') + ' mm']])}
         <div class="row">${button('Keep proof for approval','save-proof','','orange')}${button('Band map','preview-detail','view-map')}${button('Angle response','preview-detail','response')}</div>
+        ${r.flip_captions?.enabled ? captionLine({...r.flip_captions, status: r.flip_captions.status}) : ''}
+        ${r.caption_warning ? `<p class="warn">${esc(r.caption_warning)}</p>` : ''}
         ${readout(r,'Print proof settings')}`;
 }
 function renderInspection() {
@@ -190,6 +237,8 @@ async function showAngle(value) {
     state.angle = value;
     state.stage = 'angular';
     state.stageMods.angular = result.images.angle;
+    state.captionVisibility = result.report.flip_captions?.messages || null;
+    if (result.report.flip_captions && state.captionCheck) Object.assign(state.captionCheck, {status: result.report.flip_captions.status});
     redraw();
 }
 function bodyForTool(tool, v) {
@@ -231,13 +280,20 @@ const actions = {
     'source-info': async () => {const {result} = await ask(`${api()}/views/${view().id}/information`); modal('Original source',readout(result));},
     tab: value => {state.tab=value; redraw();},
     stage: async value => {if (value==='angular' && !state.stageMods.angular && !state.draftPreview) await showAngle(state.angle); else {state.stage=value; redraw();}},
-    preview: async () => {
+    'caption-check': async () => {
+        const result = await ask(`${api()}/caption-check`,'POST',{});
+        state.captionCheck = result.report;
+        notice(`Flip captions: ${titleWords(result.report.status)}.`);
+        if ((state.card?.views.filter(item=>item.enabled).length ?? 0) >= 2) await showAngle(state.angle);
+        else redraw();
+    },
+    'preview': async () => {
         state.draftPreview = await ask(`${api()}/preview`,'POST',{angle:state.angle});
         state.stage = 'print';
+        if (state.draftPreview.report.caption_warning) notice(state.draftPreview.report.caption_warning, true);
         redraw();
     },
-    'preview-detail': key => modal(titleWords(key), img(state.draftPreview.images[key],titleWords(key))),
-    'save-proof': () => dialogForm('Keep print proof','save-proof',field('Proof title','title',`Draft ${cardVersion()}`),'Keep proof'),
+    'preview-detail': key => modal(titleWords(key), img(state.draftPreview.images[key],titleWords(key))),    'save-proof': () => dialogForm('Keep print proof','save-proof',field('Proof title','title',`Draft ${cardVersion()}`),'Keep proof'),
     'open-proof': async id => {const {proof}=await ask(`${api()}/proofs/${id}`); proofModal(proof);},
     'approve-proof': id => dialogForm('Approve fixed print','approve-proof',field('Proof ID','id',id,'hidden')+
                        textarea('Approval note','note')+ '<p class="muted">Approved files stay bound to these exact pixels and settings.</p>', 'Approve print'),
@@ -265,6 +321,10 @@ const forms = {
             sheet:{width_mm:Number(v.width),height_mm:Number(v.height),dpi:Number(v.dpi),mount:v.mount,paper:v.paper},
             framing:{mode:v.frame_mode,cover:v.cover,fit_motion:v.fit_motion==='on',reference:v.reference||null,frame:numbers(v.frame)},
             sampling:{method:v.method,aperture:Number(v.aperture)},
+            captions:{enabled:v.captions_enabled==='on',region:numbers(v.captions_region),
+                left:{text:v.caption_left,angle:Number(v.caption_left_angle)},
+                right:{text:v.caption_right,angle:Number(v.caption_right_angle)},
+                size_mm:Number(v.caption_size)},
         };
         await ask(api(),'PUT',{version:cardVersion(),title:v.title,note:v.note,config});
         await openCard(state.card.id);notice('Draft settings saved.');
@@ -276,6 +336,7 @@ const forms = {
     },
     'save-proof': async v => {
         const preview=state.draftPreview.report;
+        if (preview.caption_warning) notice(preview.caption_warning, true);
         const {proof}=await ask(`${api()}/proofs`,'POST',{title:v.title,version:preview.draft_version,candidate_sha:preview.candidate_sha});
         await openCard(state.card.id,{keep:true});state.tab='records';redraw();proofModal(proof);
     },

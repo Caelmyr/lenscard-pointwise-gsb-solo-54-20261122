@@ -214,6 +214,12 @@ def register_creation(app, library, work):
             result = job.tool(tool, body)
         return result.public()
 
+    @app.post("/api/cards/<card_id>/caption-check")
+    def caption_check(card_id):
+        with work.entry():
+            result = CardJob(library, card_id).caption_preview()
+        return result.public()
+
     @app.post("/api/cards/<card_id>/retain/<tool>")
     def retain_tool(card_id, tool):
         body = _json()

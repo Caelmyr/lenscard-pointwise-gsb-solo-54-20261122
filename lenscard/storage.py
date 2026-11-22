@@ -397,6 +397,14 @@ class Library:
                 self.asset_bytes(asset)
             if "plate" not in proof["assets"] or "pdf" not in proof["assets"]:
                 raise Conflict("The print candidate is incomplete.")
+            captions = (proof["snapshot"].get("flip_captions") or {})
+            if captions.get("enabled") and not captions.get("approval_allowed"):
+                raise Unprocessable(
+                    captions.get("warning")
+                    or "The two flip captions still share an angle. Retreat one side before approval.",
+                    details={"status": captions.get("status"),
+                             "retreat_options": captions.get("retreat_options") or []},
+                )
             active = self._latest_approval(db, card_id)
             if active is not None and active["proof_id"] == proof_id:
                 return active
