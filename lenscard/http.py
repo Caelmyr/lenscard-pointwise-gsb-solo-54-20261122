@@ -24,6 +24,8 @@ from .models import (
     number, object_value, require_id, short_text, validate_keys,
 )
 from .printcheck import device_contact_sheet, measure_ruler_pitch, read_device_region, verify_physical_size
+from .salvage_http import register_salvage
+from .salvage_store import SalvageStore
 from .storage import Library
 from .transfer import (
     MAX_ARCHIVE_BYTES, accept_view_upload, pack_measurement, pack_print,
@@ -468,6 +470,7 @@ def register_transfer(app, library, work):
 def create_app(data_dir=None):
     base = Path(data_dir or os.environ.get("LENSCARD_DATA", "runtime-data"))
     library = Library(base)
+    salvage_store = SalvageStore(base / "salvage")
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = BODY_LIMIT
     work = WorkSlots(1)
@@ -476,10 +479,15 @@ def create_app(data_dir=None):
     register_targets(app, library, work)
     register_transfer(app, library, work)
     register_workbench_audits(app, library, work)
+    register_salvage(app, salvage_store, work)
 
     @app.get("/")
     def page():
         return send_from_directory(STATIC, "index.html", max_age=0)
+
+    @app.get("/salvage")
+    def salvage_page():
+        return send_from_directory(STATIC, "salvage.html", max_age=0)
 
     @app.get("/static/<path:name>")
     def files(name):

@@ -61,7 +61,9 @@ def view_index(slot, view_count, order):
 
 
 def band_index(phase, count):
-    return np.minimum(count - 1, np.floor(np.mod(phase, 1) * count).astype(np.int16))
+    index = np.floor(np.mod(phase, 1) * count).astype(np.int16)
+    # Floating-point modulo can return 1.0 at a period boundary; fold it in.
+    return np.minimum(count - 1, np.maximum(0, index))
 
 
 def overlap_length(left, right, interval_start, interval_stop):

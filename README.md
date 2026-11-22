@@ -33,4 +33,16 @@ For a native start, install the locked dependencies in a Python 3.11 virtual env
 | Version check | **Record print lineage**, **Compare two raster versions**, and **Scan device band coverage** inspect saved device files and the source snapshots. |
 | Portable materials | Download the **View set ZIP** to import original views as a new draft. Check an approved ZIP or inspection ZIP without overwriting the library. |
 
-A layout has up to eight angle views. Device output is limited to eight megapixels and 5,000 pixels on the longest side. Imports are limited to 22 MiB per image and 14 megapixels per source. An angle response is a simple global lens model. It cannot predict a bowed lens, partial obstruction or the true colour response of a particular printer. Use the real test chart, verified ruler and camera measurements when checking manufactured work. Sample geometry, plots and photographs are generated locally. The example ruler settings and viewing angles are in the metrology controls for those cards.
+A layout has up to eight angle views. Device output is limited to eight megapixels and 5,000 pixels on the longest side. Imports are limited to 22 MiB per image and 14 megapixels per source. An angle response is a simple global lens model. It cannot predict a bowed lens, partial obstruction or the true colour response of a particular printer. Use the real test chart, verified ruler and camera measurements when checking manufactured work. Sample geometry, plots and photographs are generated locally.
+
+## Salvage a surviving interlaced print
+
+Open **Print salvage** (also at `/salvage`) when the camera originals are gone and only one original-pixel interlaced print image remains. Enter the print dimensions, scanned DPI, lens pitch, phase, drift, view order, scanned side and view count you still remember, then upload the print image. The desk re-sorts the printed columns into one narrow reconstruction per angle.
+
+Every reconstruction is labelled as such; it is never treated as a recovered camera original and is stored separately from the card library. Each output pixel carries one of three provenance classes:
+
+* **Read** — copied directly from a printed column assigned to that view.
+* **Estimated** — no printed column exists at that point, so the value is linearly interpolated between bracketing read columns on the same row. Mark scratch, fold or glare rectangles as damage to make those internal gaps explicit.
+* **Missing** — no printed column exists for the view at that point (outside the scan/crop span or a row with no reads). Missing pixels are never extrapolated.
+
+Click any reconstructed image to highlight the printed block that supplied it, with the pixel class at that point. The per-view download is a ZIP containing each reconstruction, the full-width evidence image, a pixel-status map, the marked print preview, a print band map and a manifest that records the input digest, settings, per-class pixel counts and the reconstruction-only provenance. Salvage jobs keep at most twelve records; content-addressed assets are reaped once no job references them. The example ruler settings and viewing angles are in the metrology controls for those cards.

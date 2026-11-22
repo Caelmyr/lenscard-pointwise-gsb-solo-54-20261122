@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LensCard · Print salvage</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/salvage.css">
+<script type="module" src="/static/salvage.js"></script>
+</head>
+<body>
+<header class="topbar">
+<a class="brand" href="/" title="LensCard home"><i aria-hidden="true"></i>LensCard</a>
+<div class="top-title">Interlaced print salvage</div>
+<div class="top-actions"><a class="button" href="/">Card desk</a></div>
+</header>
+<main id="salvage-app">
+  <section class="salvage-intro">
+    <h1>Split a surviving interlaced print back into per-view strips</h1>
+    <p class="warning">These are <strong>reconstructions from the printed pixels you still hold</strong>,
+      not recovered camera originals. Green pixels are read directly from a printed column, amber pixels
+      are interpolated across an unreadable gap, and red pixels have no printed source.</p>
+  </section>
+
+  <div class="salvage-layout">
+    <form id="salvage-form" class="controls salvage-form">
+      <h2>What you remember about the print</h2>
+      <label>Job title<input name="title" value="Salvaged print" maxlength="100" required></label>
+      <label>Interlaced print image<input name="print" type="file" accept="image/*,.tif,.tiff" required></label>
+      <div class="grid-fields">
+        <label>Number of views<input name="view_count" type="number" value="3" min="2" max="8" required></label>
+        <label>Lens pitch (LPI)<input name="lpi" type="number" value="50" step="0.01" min="10" max="180" required></label>
+        <label>Phase (cycles)<input name="phase" type="number" value="0" step="0.001" min="-0.5" max="0.5" required></label>
+        <label>Side drift (mm/mm)<input name="shear" type="number" value="0" step="0.001" min="-0.25" max="0.25" required></label>
+        <label>Half viewing cone (°)<input name="latitude" type="number" value="22" step="0.1" min="5" max="54" required></label>
+        <label>Scanned DPI<input name="dpi" type="number" value="500" step="1" min="72" max="2400" required></label>
+        <label>Print width (mm)<input name="width_mm" type="number" value="54" step="0.1" min="18" max="220" required></label>
+        <label>Print height (mm)<input name="height_mm" type="number" value="68" step="0.1" min="18" max="290" required></label>
+      </div>
+      <div class="grid-fields">
+        <label>View order<select name="order"><option value="forward">Forward</option><option value="reverse">Reverse</option></select></label>
+        <label>Scanned side<select name="mount"><option value="face">Observer front (face)</option><option value="reverse">Back mount (reverse)</option></select></label>
+      </div>
+      <label>Crop: left, top, right, bottom (0–1, blank for whole print)
+        <input name="crop" placeholder="0, 0, 1, 1"></label>
+      <label>Damaged rectangles (one per line: left, top, right, bottom)
+        <textarea name="damage" rows="3" placeholder="0.40, 0.20, 0.43, 0.80"></textarea></label>
+      <p class="muted">Damage marks scratches, folds or glare where printed columns are unreadable.
+        Columns inside a damage region are interpolated (amber) rather than treated as real data.</p>
+      <div class="row"><button class="orange" type="submit">Reconstruct views</button></div>
+    </form>
+
+    <section class="salvage-results" aria-live="polite">
+      <div id="salvage-status" class="muted">Fill in the print details to begin a reconstruction.</div>
+      <div id="salvage-output"></div>
+    </section>
+  </div>
+
+  <section class="salvage-jobs">
+    <h2>Saved salvage jobs</h2>
+    <div id="salvage-jobs" class="muted">Loading…</div>
+  </section>
+</main>
+<dialog id="salvage-dialog" aria-label="Print location"></dialog>
+<output id="notice" aria-live="polite" hidden></output>
+</body>
+</html>
